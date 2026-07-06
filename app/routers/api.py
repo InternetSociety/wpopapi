@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, Security
+import json
+
+from fastapi import APIRouter, Depends, File, HTTPException, Security, UploadFile
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
@@ -63,13 +65,10 @@ async def get_pop_radius(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/pop-shape")
+@router.post("/pop-shape")
 async def get_pop_shape(
-    request: Request,
     iso3: str,
-    lat: float,
-    lon: float,
-    geojson: dict = Body(...),
+    geojson_file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
     _credentials: HTTPAuthorizationCredentials = Security(bearer_scheme)
@@ -79,9 +78,17 @@ async def get_pop_shape(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
-    body = await request.body()
+    body = await geojson_file.read()
     if len(body) > 5 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="geojson body must be 5MB or smaller")
+
+    try:
+        geojson = json.loads(body)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=422, detail="geojson file must contain valid JSON")
+
+    if not isinstance(geojson, dict):
+        raise HTTPException(status_code=422, detail="geojson file must contain a JSON object")
 
     if count_geojson_vertices(geojson) > 10_000:
         raise HTTPException(status_code=422, detail="geojson must contain 10,000 vertices or fewer")

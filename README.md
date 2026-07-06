@@ -26,10 +26,10 @@ The API uses bearer token authentication.
   - Query parameters: `iso3`, `lat`, `lon`, `radius`
   - `radius` is in metres and must be `<= 100000`
   - Returns: `{"pop": 12345}`
-- `GET /api/pop-shape`
-  - Query parameters: `iso3`, `lat`, `lon`
-  - Request body: GeoJSON object
-  - Body size limit: 5 MB
+- `POST /api/pop-shape`
+  - Query parameters: `iso3`
+  - Form field: `geojson_file` containing a GeoJSON document
+  - File size limit: 5 MB
   - Vertex limit: 10,000
   - Returns: `{"pop": 12345}`
 
