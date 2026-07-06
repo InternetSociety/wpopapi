@@ -1,0 +1,8 @@
+tunnel.env
+
+# Database
+app/data/app.db
+
+# Cached tiles
+app/data/tiles/*.tif
+
