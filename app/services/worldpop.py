@@ -32,7 +32,7 @@ def normalize_iso3(iso3: str) -> str:
 
 def get_worldpop_url(iso3: str) -> str:
     iso3 = normalize_iso3(iso3)
-    file_name = f"{iso3.lower()}_pop_{year + 1}_CN_100m_{release}_{version}.tif"
+    file_name = f"{iso3.lower()}_pop_{year}_CN_100m_{release}_{version}.tif"
     return (
         "https://data.worldpop.org/GIS/Population/"
         f"{dataset}/{release}/{year}/{iso3}/{version}/100m/constrained/{file_name}"
