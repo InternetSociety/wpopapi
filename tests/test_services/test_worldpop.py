@@ -1,0 +1,90 @@
+import numpy as np
+import pytest
+import rasterio
+from rasterio.transform import from_origin
+
+from app.config import dataset, release, version, year
+from app.services.worldpop import (
+    CoordinatesOutsideCountryError,
+    WorldPopService,
+    count_geojson_vertices,
+    get_worldpop_url,
+    normalize_iso3,
+)
+
+
+def _write_test_raster(path):
+    data = np.arange(1, 101, dtype=np.int16).reshape((10, 10))
+    transform = from_origin(0, 10, 1, 1)
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=data.shape[0],
+        width=data.shape[1],
+        count=1,
+        dtype=data.dtype,
+        crs="EPSG:4326",
+        transform=transform,
+    ) as dst:
+        dst.write(data, 1)
+
+
+def test_url_generation():
+    assert get_worldpop_url("nzl") == (
+        "https://data.worldpop.org/GIS/Population/"
+        f"{dataset}/{release}/{year}/NZL/{version}/100m/constrained/"
+        f"nzl_pop_{year + 1}_CN_100m_{release}_{version}.tif"
+    )
+
+
+def test_normalize_iso3():
+    assert normalize_iso3("nzl") == "NZL"
+
+
+def test_vertex_count():
+    geojson = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]],
+                },
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[0, 0], [1, 1], [2, 2]],
+                },
+            },
+        ],
+    }
+
+    assert count_geojson_vertices(geojson) == 7
+
+
+@pytest.mark.asyncio
+async def test_pop_queries_with_local_raster(tmp_path):
+    raster_path = tmp_path / "NZL_pop.tif"
+    _write_test_raster(raster_path)
+
+    service = WorldPopService(db=object())
+
+    async def fake_get_tile_path(_iso3):
+        return str(raster_path)
+
+    service.get_tile_path = fake_get_tile_path  # type: ignore[method-assign]
+
+    assert await service.get_pop("nzl", 7.5, 2.5) == 23
+    assert await service.get_pop_radius("nzl", 7.5, 2.5, 2_000_000) == 5050
+    with pytest.raises(CoordinatesOutsideCountryError, match="coordinates supplied are outside of the country specified"):
+        await service.get_pop_radius("nzl", -80.0, 170.0, 10_000)
+
+    geojson = {
+        "type": "Polygon",
+        "coordinates": [[[0, 10], [2, 10], [2, 8], [0, 8], [0, 10]]],
+    }
+    assert await service.get_pop_shape("nzl", geojson) == 26

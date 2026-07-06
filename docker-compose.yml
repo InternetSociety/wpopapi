@@ -1,0 +1,20 @@
+services:
+  app:
+    build: .
+    container_name: wpopapi-app
+    volumes:
+      - ./app/data:/app/data
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:////app/data/app.db
+      - TILE_CACHE_DIR=/app/data/tiles
+    ports:
+      - "8002:8002"
+    restart: always
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: wpopapi-tunnel
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    restart: always
