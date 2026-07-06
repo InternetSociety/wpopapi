@@ -2,6 +2,10 @@
 
 This application provides a web API to query current-year WorldPop population data by country.
 
+The dataset currently referenced is an alpha version (R2025A) product and may change over the coming year as improvements are made.
+
+Bondarenko M., Priyatikanto R., Tejedor-Garavito N., Zhang W., McKeen T., Cunningham A., Woods T., Hilton J., Cihan D., Nosatiuk B., Brinkhoff T., Tatem A., Sorichetta A.. Constrained estimates of 2015-2030 total number of people per grid square at a resolution of 3 arc (approximately 100m at the equator) R2025A version v1. Global Demographic Data Project - Funded by The Bill and Melinda Gates Foundation (INV-045237). WorldPop - School of Geography and Environmental Science, University of Southampton. DOI:10.5258/SOTON/WP00839
+
 ## API Documentation
 
 Access the interactive Swagger UI at `/docs`.
