@@ -45,6 +45,28 @@ The application always loads and queries the single tile for the requested ISO3 
   - `year = 2025`
   - `tile_expiry = 365`
 
+## Query Methodology
+
+Population queries are implemented against a single cached GeoTIFF per country code in `app/services/worldpop.py`.
+
+- `GET /api/pop` performs a single-point raster sample with `rasterio.sample(...)`.
+- `GET /api/pop-radius` builds a circular geometry around the supplied centre point, then converts the geometry bounds into a raster window with `rasterio.windows.from_bounds(...)`.
+- `POST /api/pop-shape` parses the uploaded GeoJSON file, extracts one or more geometries, and uses the same raster-window path.
+- Both radius and GeoJSON queries read only the raster window that overlaps the supplied geometry; the full TIFF is not loaded into memory unless the requested window spans the whole tile.
+- The selected window is then masked with `rasterio.features.geometry_mask(...)` so only pixels inside the supplied geometry contribute to the sum.
+- Point and Radius queries require the supplied centre point to fall inside the cached country tile. If the centre is outside the tile bounds, `/api/pop-radius` returns `422` with a detail message.
+- If the requested GeoJSON geometry does not overlap the tile, the API returns a `422` result for GeoJSON intersections with the detail `geojson is not inside the bounds of country {iso3}`.
+- GeoJSON queries may extend beyond the tile bounds. In that case the request proceeds and only the portion overlapping the tile contributes to the population sum.
+
+Key packages used in the query pipeline:
+
+- `rasterio`: TIFF access, windowed reads, masking, and transforms
+- `shapely`: geometry construction, bounds extraction, and geometry operations
+- `pyproj`: coordinate transformation for the radius buffer
+- `numpy`: masked-array handling and summation
+- `httpx`: tile download on cache miss
+- `SQLAlchemy`: cached-tile lookup and persistence
+
 ## Tile Caching
 
 The server caches one tile per country code:
@@ -94,5 +116,4 @@ docker exec -it wpopapi-app python manage_users.py remove admin@example.com
 ## Notes
 
 - The service only loads the country tile for the requested ISO3 code.
-- Multi-tile coverage is not used.
-- Existing auth and UI routes remain in place.
+- Multi-tile coverage is not supported.

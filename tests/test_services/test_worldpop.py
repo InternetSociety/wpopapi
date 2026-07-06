@@ -6,6 +6,7 @@ from rasterio.transform import from_origin
 from app.config import dataset, release, version, year
 from app.services.worldpop import (
     CoordinatesOutsideCountryError,
+    GeoJSONOutsideCountryError,
     WorldPopService,
     count_geojson_vertices,
     get_worldpop_url,
@@ -34,7 +35,7 @@ def test_url_generation():
     assert get_worldpop_url("nzl") == (
         "https://data.worldpop.org/GIS/Population/"
         f"{dataset}/{release}/{year}/NZL/{version}/100m/constrained/"
-        f"nzl_pop_{year + 1}_CN_100m_{release}_{version}.tif"
+        f"nzl_pop_{year}_CN_100m_{release}_{version}.tif"
     )
 
 
@@ -88,3 +89,10 @@ async def test_pop_queries_with_local_raster(tmp_path):
         "coordinates": [[[0, 10], [2, 10], [2, 8], [0, 8], [0, 10]]],
     }
     assert await service.get_pop_shape("nzl", geojson) == 26
+
+    outside_geojson = {
+        "type": "Polygon",
+        "coordinates": [[[20, 20], [21, 20], [21, 21], [20, 21], [20, 20]]],
+    }
+    with pytest.raises(GeoJSONOutsideCountryError, match="geojson is not inside the bounds of country NZL"):
+        await service.get_pop_shape("nzl", outside_geojson)

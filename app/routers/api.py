@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.services.worldpop import (
     CoordinatesOutsideCountryError,
+    GeoJSONOutsideCountryError,
     WorldPopService,
     count_geojson_vertices,
     normalize_iso3,
@@ -97,5 +98,7 @@ async def get_pop_shape(
     try:
         pop = await service.get_pop_shape(iso3, geojson)
         return {"pop": pop}
+    except GeoJSONOutsideCountryError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

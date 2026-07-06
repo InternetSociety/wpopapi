@@ -14,6 +14,7 @@ from app.models.models import CachedTile
 from rasterio.features import geometry_mask
 from rasterio.windows import from_bounds
 from shapely.geometry import GeometryCollection, Point, mapping, shape
+from shapely.geometry import box
 from shapely.ops import transform
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +22,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 class CoordinatesOutsideCountryError(ValueError):
     pass
+
+
+class GeoJSONOutsideCountryError(ValueError):
+    def __init__(self, iso3: str):
+        super().__init__(f"geojson is not inside the bounds of country {iso3}")
 
 
 def normalize_iso3(iso3: str) -> str:
@@ -32,7 +38,7 @@ def normalize_iso3(iso3: str) -> str:
 
 def get_worldpop_url(iso3: str) -> str:
     iso3 = normalize_iso3(iso3)
-    file_name = f"{iso3.lower()}_pop_{year + 1}_CN_100m_{release}_{version}.tif"
+    file_name = f"{iso3.lower()}_pop_{year}_CN_100m_{release}_{version}.tif"
     return (
         "https://data.worldpop.org/GIS/Population/"
         f"{dataset}/{release}/{year}/{iso3}/{version}/100m/constrained/{file_name}"
@@ -168,6 +174,11 @@ class WorldPopService:
         if not geometries:
             return 0
         logging.info("get_pop_shape: iso3=%s geometries=%s", iso3, len(geometries))
+        file_path = await self.get_tile_path(iso3)
+        with rasterio.open(file_path) as src:
+            tile_bounds = box(*src.bounds)
+            if not any(geom.intersects(tile_bounds) for geom in geometries):
+                raise GeoJSONOutsideCountryError(normalize_iso3(iso3))
         return await self._sum_population_within_geometry(iso3, geometries)
 
     async def _sum_population_within_geometry(self, iso3: str, geometries: list[Any]) -> int:
