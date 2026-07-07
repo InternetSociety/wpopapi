@@ -1,20 +1,21 @@
 import secrets
+import logging
 from datetime import datetime, timedelta
 from typing import Optional
 from urllib.parse import urlencode
-from fastapi import APIRouter, Depends, HTTPException, status, Form, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, Form, Request
 from fastapi.responses import RedirectResponse, HTMLResponse
 import markdown
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from jose import jwt
-from app.database import get_db
+from app.database import get_db, AsyncSessionLocal
 from app.models.models import User, CachedTile
 from app.dependencies import pwd_context, get_current_active_user, get_current_admin_user, get_current_user
 from app.config import settings
 from fastapi.templating import Jinja2Templates
-from app.services.worldpop import WorldPopService
+from app.services.worldpop import WorldPopService, parse_iso3_csv
 
 router = APIRouter(tags=["Auth & UI"])
 templates = Jinja2Templates(directory="app/templates")
@@ -28,6 +29,15 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
+
+
+async def _process_tile_cache_fill(iso3_codes: str) -> None:
+    async with AsyncSessionLocal() as db:
+        service = WorldPopService(db)
+        try:
+            await service.fill_tile_cache(iso3_codes)
+        except Exception:
+            logging.exception("Tile cache fill task failed")
 
 @router.get("/", response_class=HTMLResponse)
 async def home(request: Request, user: Optional[User] = Depends(get_current_user)):
@@ -213,22 +223,19 @@ async def tile_cache_page(
 
 @router.post("/tile-cache/fill")
 async def fill_tile_cache(
+    *,
+    background_tasks: BackgroundTasks,
     iso3_codes: str = Form(...),
-    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_admin_user),
 ):
-    service = WorldPopService(db)
-
     try:
-        cached_paths = await service.fill_tile_cache(iso3_codes)
-    except Exception as exc:
+        iso3_list = parse_iso3_csv(iso3_codes)
+    except ValueError as exc:
         query = urlencode({"status": "error", "message": str(exc)})
-        return RedirectResponse(
-            url=f"/tile-cache?{query}",
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
+        return RedirectResponse(url=f"/tile-cache?{query}", status_code=status.HTTP_303_SEE_OTHER)
 
-    query = urlencode({"status": "success", "message": f"Cached {len(cached_paths)} tile(s)."})
+    background_tasks.add_task(_process_tile_cache_fill, ",".join(iso3_list))
+    query = urlencode({"status": "success", "message": f"Queued {len(iso3_list)} tile(s) for cache fill."})
     return RedirectResponse(
         url=f"/tile-cache?{query}",
         status_code=status.HTTP_303_SEE_OTHER,

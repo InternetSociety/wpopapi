@@ -29,6 +29,11 @@ class GeoJSONOutsideCountryError(ValueError):
         super().__init__(f"geojson is not inside the bounds of country {iso3}")
 
 
+class TileNotFoundError(ValueError):
+    def __init__(self, iso3: str):
+        super().__init__(f"no tile available for country {iso3}")
+
+
 def normalize_iso3(iso3: str) -> str:
     normalized = iso3.strip().upper()
     if len(normalized) != 3 or not normalized.isalpha():
@@ -117,7 +122,7 @@ class WorldPopService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def get_tile_path(self, iso3: str) -> str:
+    async def get_tile_path(self, iso3: str, skip_missing: bool = False) -> str:
         iso3 = normalize_iso3(iso3)
 
         result = await self.db.execute(select(CachedTile).where(CachedTile.tile_id == iso3))
@@ -132,18 +137,27 @@ class WorldPopService:
             await self.db.commit()
             return cached_tile.file_path
 
-        return await self._download_and_cache_tile(iso3, now, expires_at)
+        return await self._download_and_cache_tile(iso3, now, expires_at, skip_missing=skip_missing)
 
     async def fill_tile_cache(self, iso3_csv: str) -> list[str]:
         iso3_codes = parse_iso3_csv(iso3_csv)
         cached_tiles: list[str] = []
 
         for iso3 in iso3_codes:
-            cached_tiles.append(await self.get_tile_path(iso3))
+            try:
+                cached_tiles.append(await self.get_tile_path(iso3, skip_missing=True))
+            except TileNotFoundError:
+                logging.info("Skipping missing tile %s during cache fill", iso3)
 
         return cached_tiles
 
-    async def _download_and_cache_tile(self, iso3: str, now: datetime, expires_at: datetime) -> str:
+    async def _download_and_cache_tile(
+        self,
+        iso3: str,
+        now: datetime,
+        expires_at: datetime,
+        skip_missing: bool = False,
+    ) -> str:
         url = get_worldpop_url(iso3)
         file_name = os.path.basename(url)
         file_path = os.path.join(settings.TILE_CACHE_DIR, file_name)
@@ -152,6 +166,8 @@ class WorldPopService:
         async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
             response = await client.get(url)
             if response.status_code != 200:
+                if skip_missing and response.status_code == 404:
+                    raise TileNotFoundError(iso3)
                 raise Exception(f"Failed to download tile {iso3} from {url}: {response.status_code}")
             with open(file_path, "wb") as f:
                 f.write(response.content)

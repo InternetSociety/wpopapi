@@ -8,6 +8,7 @@ from app.services.worldpop import (
     CoordinatesOutsideCountryError,
     GeoJSONOutsideCountryError,
     WorldPopService,
+    TileNotFoundError,
     count_geojson_vertices,
     get_worldpop_url,
     normalize_iso3,
@@ -113,13 +114,53 @@ async def test_fill_tile_cache_uses_each_iso3_once(monkeypatch):
     service = WorldPopService(db=object())
     seen = []
 
-    async def fake_get_tile_path(iso3):
-        seen.append(iso3)
+    async def fake_get_tile_path(iso3, skip_missing=False):
+        seen.append((iso3, skip_missing))
         return f"/tmp/{iso3}.tif"
 
     service.get_tile_path = fake_get_tile_path  # type: ignore[method-assign]
 
     cached_paths = await service.fill_tile_cache("aus, NZL,aus,usa")
 
-    assert seen == ["AUS", "NZL", "USA"]
+    assert seen == [("AUS", True), ("NZL", True), ("USA", True)]
     assert cached_paths == ["/tmp/AUS.tif", "/tmp/NZL.tif", "/tmp/USA.tif"]
+
+
+@pytest.mark.asyncio
+async def test_fill_tile_cache_skips_missing_tiles(monkeypatch):
+    service = WorldPopService(db=object())
+    seen = []
+
+    async def fake_get_tile_path(iso3, skip_missing=False):
+        seen.append((iso3, skip_missing))
+        if iso3 == "NZL":
+            raise TileNotFoundError(iso3)
+        return f"/tmp/{iso3}.tif"
+
+    service.get_tile_path = fake_get_tile_path  # type: ignore[method-assign]
+
+    cached_paths = await service.fill_tile_cache("aus,nzl,usa")
+
+    assert seen == [("AUS", True), ("NZL", True), ("USA", True)]
+    assert cached_paths == ["/tmp/AUS.tif", "/tmp/USA.tif"]
+
+
+@pytest.mark.asyncio
+async def test_get_tile_path_propagates_missing_tile_error(monkeypatch):
+    class _FakeScalarResult:
+        def scalar_one_or_none(self):
+            return None
+
+    class _FakeDB:
+        async def execute(self, *args, **kwargs):
+            return _FakeScalarResult()
+
+    service = WorldPopService(db=_FakeDB())
+
+    async def fake_download(*args, **kwargs):
+        raise TileNotFoundError("NZL")
+
+    monkeypatch.setattr(service, "_download_and_cache_tile", fake_download)
+
+    with pytest.raises(TileNotFoundError, match="no tile available for country NZL"):
+        await service.get_tile_path("nzl")

@@ -78,11 +78,12 @@ def test_tile_cache_fill_redirects_for_admin(monkeypatch):
     def override_get_current_admin_user():
         return SimpleNamespace(email="admin@example.com", is_admin=True)
 
-    async def fake_fill_tile_cache(self, iso3_codes):
-        assert iso3_codes == "aus,nzl"
-        return ["/tmp/AUS.tif", "/tmp/NZL.tif"]
+    called = {}
 
-    monkeypatch.setattr("app.routers.auth.WorldPopService.fill_tile_cache", fake_fill_tile_cache)
+    async def fake_process_tile_cache_fill(iso3_codes):
+        called["iso3_codes"] = iso3_codes
+
+    monkeypatch.setattr("app.routers.auth._process_tile_cache_fill", fake_process_tile_cache_fill)
 
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_current_admin_user] = override_get_current_admin_user
@@ -92,5 +93,6 @@ def test_tile_cache_fill_redirects_for_admin(monkeypatch):
         response = client.post("/tile-cache/fill", data={"iso3_codes": "aus,nzl"}, follow_redirects=False)
         assert response.status_code == 303
         assert response.headers["location"].startswith("/tile-cache?status=success")
+        assert called["iso3_codes"] == "AUS,NZL"
     finally:
         app.dependency_overrides.clear()
