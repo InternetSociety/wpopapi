@@ -36,6 +36,26 @@ def normalize_iso3(iso3: str) -> str:
     return normalized
 
 
+def parse_iso3_csv(iso3_csv: str) -> list[str]:
+    iso3_codes: list[str] = []
+    seen: set[str] = set()
+
+    for raw_code in iso3_csv.split(","):
+        code = raw_code.strip()
+        if not code:
+            continue
+        normalized = normalize_iso3(code)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        iso3_codes.append(normalized)
+
+    if not iso3_codes:
+        raise ValueError("iso3 list must contain at least one valid three-letter ISO country code")
+
+    return iso3_codes
+
+
 def get_worldpop_url(iso3: str) -> str:
     iso3 = normalize_iso3(iso3)
     file_name = f"{iso3.lower()}_pop_{year}_CN_100m_{release}_{version}.tif"
@@ -112,6 +132,18 @@ class WorldPopService:
             await self.db.commit()
             return cached_tile.file_path
 
+        return await self._download_and_cache_tile(iso3, now, expires_at)
+
+    async def fill_tile_cache(self, iso3_csv: str) -> list[str]:
+        iso3_codes = parse_iso3_csv(iso3_csv)
+        cached_tiles: list[str] = []
+
+        for iso3 in iso3_codes:
+            cached_tiles.append(await self.get_tile_path(iso3))
+
+        return cached_tiles
+
+    async def _download_and_cache_tile(self, iso3: str, now: datetime, expires_at: datetime) -> str:
         url = get_worldpop_url(iso3)
         file_name = os.path.basename(url)
         file_path = os.path.join(settings.TILE_CACHE_DIR, file_name)

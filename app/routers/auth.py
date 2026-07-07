@@ -1,6 +1,7 @@
 import secrets
 from datetime import datetime, timedelta
 from typing import Optional
+from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, HTTPException, status, Form, Request
 from fastapi.responses import RedirectResponse, HTMLResponse
 import markdown
@@ -13,6 +14,7 @@ from app.models.models import User, CachedTile
 from app.dependencies import pwd_context, get_current_active_user, get_current_admin_user, get_current_user
 from app.config import settings
 from fastapi.templating import Jinja2Templates
+from app.services.worldpop import WorldPopService
 
 router = APIRouter(tags=["Auth & UI"])
 templates = Jinja2Templates(directory="app/templates")
@@ -200,5 +202,34 @@ async def tile_cache_page(
     return templates.TemplateResponse(
         request=request,
         name="tile_cache.html",
-        context={"tiles": tiles, "current_user": current_user},
+        context={
+            "tiles": tiles,
+            "current_user": current_user,
+            "status": request.query_params.get("status"),
+            "message": request.query_params.get("message"),
+        },
+    )
+
+
+@router.post("/tile-cache/fill")
+async def fill_tile_cache(
+    iso3_codes: str = Form(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user),
+):
+    service = WorldPopService(db)
+
+    try:
+        cached_paths = await service.fill_tile_cache(iso3_codes)
+    except Exception as exc:
+        query = urlencode({"status": "error", "message": str(exc)})
+        return RedirectResponse(
+            url=f"/tile-cache?{query}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    query = urlencode({"status": "success", "message": f"Cached {len(cached_paths)} tile(s)."})
+    return RedirectResponse(
+        url=f"/tile-cache?{query}",
+        status_code=status.HTTP_303_SEE_OTHER,
     )

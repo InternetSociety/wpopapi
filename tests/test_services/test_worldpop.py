@@ -11,6 +11,7 @@ from app.services.worldpop import (
     count_geojson_vertices,
     get_worldpop_url,
     normalize_iso3,
+    parse_iso3_csv,
 )
 
 
@@ -41,6 +42,15 @@ def test_url_generation():
 
 def test_normalize_iso3():
     assert normalize_iso3("nzl") == "NZL"
+
+
+def test_parse_iso3_csv_normalizes_and_deduplicates():
+    assert parse_iso3_csv("aus, nzl, AUS,usa") == ["AUS", "NZL", "USA"]
+
+
+def test_parse_iso3_csv_rejects_empty_input():
+    with pytest.raises(ValueError, match="iso3 list must contain at least one valid three-letter ISO country code"):
+        parse_iso3_csv(" , ")
 
 
 def test_vertex_count():
@@ -96,3 +106,20 @@ async def test_pop_queries_with_local_raster(tmp_path):
     }
     with pytest.raises(GeoJSONOutsideCountryError, match="geojson is not inside the bounds of country NZL"):
         await service.get_pop_shape("nzl", outside_geojson)
+
+
+@pytest.mark.asyncio
+async def test_fill_tile_cache_uses_each_iso3_once(monkeypatch):
+    service = WorldPopService(db=object())
+    seen = []
+
+    async def fake_get_tile_path(iso3):
+        seen.append(iso3)
+        return f"/tmp/{iso3}.tif"
+
+    service.get_tile_path = fake_get_tile_path  # type: ignore[method-assign]
+
+    cached_paths = await service.fill_tile_cache("aus, NZL,aus,usa")
+
+    assert seen == ["AUS", "NZL", "USA"]
+    assert cached_paths == ["/tmp/AUS.tif", "/tmp/NZL.tif", "/tmp/USA.tif"]

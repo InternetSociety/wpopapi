@@ -13,6 +13,31 @@
       <span class="text-muted small">Signed in as {{ current_user.email }}</span>
     </div>
     <h1 class="mb-4">Tile Cache</h1>
+    {% if status and message %}
+    <div class="alert alert-{{ 'success' if status == 'success' else 'danger' }}" role="alert">
+      {{ message }}
+    </div>
+    {% endif %}
+    {% if current_user.is_admin %}
+    <form action="/tile-cache/fill" method="post" class="mb-4">
+      <label for="iso3_codes" class="form-label">Fill tile cache</label>
+      <div class="input-group">
+        <input
+          type="text"
+          class="form-control"
+          id="iso3_codes"
+          name="iso3_codes"
+          placeholder="AUS,nzl,USA"
+          aria-describedby="fillHelp"
+          required
+        >
+        <button class="btn btn-primary" type="submit">Cache tiles</button>
+      </div>
+      <div id="fillHelp" class="form-text">
+        Comma-separated three-letter ISO country codes.
+      </div>
+    </form>
+    {% endif %}
     {% if tiles %}
     <div class="table-responsive">
       <table class="table table-striped table-hover align-middle">
