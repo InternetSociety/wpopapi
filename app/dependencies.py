@@ -7,7 +7,7 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from app.database import get_db
 from app.models.models import User
-from app.config import settings
+from app.config import SESSION_COOKIE_NAME, settings
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -30,7 +30,7 @@ async def get_current_user(
     
     # If no token from Authorization header, check cookie
     if not token:
-        cookie_token = request.cookies.get("access_token")
+        cookie_token = request.cookies.get(SESSION_COOKIE_NAME)
         if cookie_token:
             if cookie_token.startswith("Bearer "):
                 token = cookie_token[7:]

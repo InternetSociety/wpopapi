@@ -1,6 +1,9 @@
 import os
 from pydantic_settings import BaseSettings
 
+SESSION_COOKIE_NAME = "wpopapi_session"
+
+
 class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite+aiosqlite:///app/data/app.db"
     SQL_SETUP_FILE: str = "data_table_setup.sql"
