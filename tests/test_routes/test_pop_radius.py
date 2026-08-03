@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 import rasterio
 from rasterio.transform import from_origin
 
+from app.config import settings
 from app.database import get_db
 from app.dependencies import get_current_active_user
 from app.main import app
@@ -54,6 +55,40 @@ def test_pop_radius_returns_422_when_center_is_outside_country(tmp_path, monkeyp
         assert response.status_code == 422
         assert response.json() == {
             "detail": "coordinates supplied are outside of the country specified"
+        }
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_pop_radius_uses_configured_limits(monkeypatch):
+    async def override_get_db():
+        yield object()
+
+    def override_get_current_active_user():
+        return SimpleNamespace(email="user@example.com", is_admin=False)
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_active_user] = override_get_current_active_user
+    monkeypatch.setattr(settings, "POP_RADIUS_MIN_METERS", 10.0)
+    monkeypatch.setattr(settings, "POP_RADIUS_MAX_METERS", 20.0)
+
+    try:
+        client = TestClient(app)
+
+        below_minimum = client.get(
+            "/api/pop-radius",
+            params={"iso3": "AUS", "lat": 0, "lon": 0, "radius": 9},
+        )
+        above_maximum = client.get(
+            "/api/pop-radius",
+            params={"iso3": "AUS", "lat": 0, "lon": 0, "radius": 21},
+        )
+
+        assert below_minimum.status_code == 422
+        assert above_maximum.status_code == 422
+        assert below_minimum.json() == above_maximum.json()
+        assert below_minimum.json() == {
+            "detail": "radius must be between 10 and 20 metres (0.02 km)."
         }
     finally:
         app.dependency_overrides.clear()

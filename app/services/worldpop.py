@@ -9,7 +9,7 @@ import numpy as np
 import pyproj
 import rasterio
 from rasterio.errors import WindowError
-from app.config import dataset, release, settings, tile_expiry, version, year
+from app.config import dataset, release, settings, version, year
 from app.models.models import CachedTile
 from rasterio.features import geometry_mask
 from rasterio.windows import from_bounds
@@ -129,7 +129,7 @@ class WorldPopService:
         cached_tile = result.scalar_one_or_none()
 
         now = datetime.utcnow()
-        expires_at = now + timedelta(days=tile_expiry)
+        expires_at = now + timedelta(days=settings.TILE_CACHE_EXPIRY_DAYS)
 
         if cached_tile:
             cached_tile.last_used_at = now
@@ -163,7 +163,10 @@ class WorldPopService:
         file_path = os.path.join(settings.TILE_CACHE_DIR, file_name)
 
         logging.info("Downloading tile %s from %s", iso3, url)
-        async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            timeout=settings.TILE_DOWNLOAD_TIMEOUT_SECONDS,
+            follow_redirects=True,
+        ) as client:
             response = await client.get(url)
             if response.status_code != 200:
                 if skip_missing and response.status_code == 404:

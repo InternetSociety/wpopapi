@@ -6,6 +6,7 @@ import rasterio
 from fastapi.testclient import TestClient
 from rasterio.transform import from_origin
 
+from app.config import settings
 from app.database import get_db
 from app.dependencies import get_current_active_user
 from app.main import app
@@ -94,6 +95,70 @@ def test_pop_shape_returns_422_when_geojson_is_outside_tile(tmp_path, monkeypatc
         assert response.status_code == 422
         assert response.json() == {
             "detail": "geojson is not inside the bounds of country NZL"
+        }
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_pop_shape_uses_configured_file_size_limit(monkeypatch):
+    async def override_get_db():
+        yield object()
+
+    def override_get_current_active_user():
+        return SimpleNamespace(email="user@example.com", is_admin=False)
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_active_user] = override_get_current_active_user
+    monkeypatch.setattr(settings, "GEOJSON_MAX_SIZE_BYTES", 4)
+
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/pop-shape",
+            params={"iso3": "nzl"},
+            files={
+                "geojson_file": (
+                    "shape.geojson",
+                    BytesIO(b"12345"),
+                    "application/geo+json",
+                )
+            },
+        )
+
+        assert response.status_code == 413
+        assert response.json() == {
+            "detail": "geojson body must be 4 bytes or smaller"
+        }
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_pop_shape_uses_configured_vertex_limit(monkeypatch):
+    async def override_get_db():
+        yield object()
+
+    def override_get_current_active_user():
+        return SimpleNamespace(email="user@example.com", is_admin=False)
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_active_user] = override_get_current_active_user
+    monkeypatch.setattr(settings, "GEOJSON_MAX_VERTICES", 4)
+
+    geojson = (
+        b'{"type":"Polygon","coordinates":[[[0,10],[2,10],[2,8],[0,8],[0,10]]]}'
+    )
+
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/pop-shape",
+            params={"iso3": "nzl"},
+            files={"geojson_file": ("shape.geojson", BytesIO(geojson), "application/geo+json")},
+        )
+
+        assert response.status_code == 422
+        assert response.json() == {
+            "detail": "geojson must contain 4 vertices or fewer"
         }
     finally:
         app.dependency_overrides.clear()

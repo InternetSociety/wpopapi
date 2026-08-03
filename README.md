@@ -24,14 +24,29 @@ The API uses bearer token authentication.
   - Returns: `{"pop": 12345}`
 - `GET /api/pop-radius`
   - Query parameters: `iso3`, `lat`, `lon`, `radius`
-  - `radius` is in metres and must be `<= 100000`
+  - `radius` is in metres and defaults to a permitted range of `1` to `100000`
   - Returns: `{"pop": 12345}`
 - `POST /api/pop-shape`
   - Query parameters: `iso3`
   - Form field: `geojson_file` containing a GeoJSON document
-  - File size limit: 5 MB
-  - Vertex limit: 10,000
+  - Default file size limit: 5 MB
+  - Default vertex limit: 10,000
   - Returns: `{"pop": 12345}`
+
+### Configurable Limits
+
+Operational limits are defined on `Settings` in `app/config.py`. They can also be
+overridden with environment variables of the same name.
+
+| Setting | Default | Purpose |
+| --- | ---: | --- |
+| `POP_RADIUS_MIN_METERS` | 1 | Minimum population-radius query size |
+| `POP_RADIUS_MAX_METERS` | 100,000 | Maximum population-radius query size |
+| `GEOJSON_MAX_SIZE_BYTES` | 5,242,880 | Maximum uploaded GeoJSON size |
+| `GEOJSON_MAX_VERTICES` | 10,000 | Maximum vertices in uploaded GeoJSON |
+| `TILE_DOWNLOAD_TIMEOUT_SECONDS` | 120 | WorldPop tile download timeout |
+| `TILE_CACHE_EXPIRY_DAYS` | 365 | Cached tile lifetime |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | 10,080 | Login access-token lifetime |
 
 ## Query Model
 
@@ -43,7 +58,6 @@ The application always loads and queries the single tile for the requested ISO3 
   - `release = "R2025A"`
   - `version = "v1"`
   - `year = 2025`
-  - `tile_expiry = 365`
 
 ## Query Methodology
 
@@ -73,7 +87,7 @@ The server caches one tile per country code:
 - Identification: requested ISO3 code
 - Download: on demand
 - Storage: `/app/data/tiles`
-- Expiration: cached tiles expire after `tile_expiry` days and are removed from disk and SQLite
+- Expiration: cached tiles expire after `TILE_CACHE_EXPIRY_DAYS` and are removed from disk and SQLite
 
 ## User Management
 

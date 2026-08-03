@@ -3,6 +3,7 @@ import json
 from fastapi import APIRouter, Depends, File, HTTPException, Security, UploadFile
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.config import settings
 from app.database import get_db
 from app.services.worldpop import (
     CoordinatesOutsideCountryError,
@@ -17,6 +18,16 @@ from app.models.models import User
 bearer_scheme = HTTPBearer(auto_error=False)
 
 router = APIRouter(prefix="/api", tags=["API"])
+
+
+def _format_byte_size(byte_count: int) -> str:
+    megabyte = 1024 * 1024
+    if byte_count % megabyte == 0:
+        return f"{byte_count // megabyte:,}MB"
+    if byte_count % 1024 == 0:
+        return f"{byte_count // 1024:,}KB"
+    return f"{byte_count:,} bytes"
+
 
 @router.get("/pop")
 async def get_pop(
@@ -54,8 +65,16 @@ async def get_pop_radius(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
-    if radius <= 0 or radius > 100_000:
-        raise HTTPException(status_code=422, detail="radius must be between 1 and 100000 metres (100 km).")
+    if not settings.POP_RADIUS_MIN_METERS <= radius <= settings.POP_RADIUS_MAX_METERS:
+        minimum = settings.POP_RADIUS_MIN_METERS
+        maximum = settings.POP_RADIUS_MAX_METERS
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"radius must be between {minimum:g} and {maximum:g} metres "
+                f"({maximum / 1000:g} km)."
+            ),
+        )
     service = WorldPopService(db)
     try:
         pop = await service.get_pop_radius(iso3, lat, lon, radius)
@@ -79,9 +98,15 @@ async def get_pop_shape(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
-    body = await geojson_file.read()
-    if len(body) > 5 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="geojson body must be 5MB or smaller")
+    body = await geojson_file.read(settings.GEOJSON_MAX_SIZE_BYTES + 1)
+    if len(body) > settings.GEOJSON_MAX_SIZE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                "geojson body must be "
+                f"{_format_byte_size(settings.GEOJSON_MAX_SIZE_BYTES)} or smaller"
+            ),
+        )
 
     try:
         geojson = json.loads(body)
@@ -91,8 +116,14 @@ async def get_pop_shape(
     if not isinstance(geojson, dict):
         raise HTTPException(status_code=422, detail="geojson file must contain a JSON object")
 
-    if count_geojson_vertices(geojson) > 10_000:
-        raise HTTPException(status_code=422, detail="geojson must contain 10,000 vertices or fewer")
+    if count_geojson_vertices(geojson) > settings.GEOJSON_MAX_VERTICES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"geojson must contain {settings.GEOJSON_MAX_VERTICES:,} "
+                "vertices or fewer"
+            ),
+        )
 
     service = WorldPopService(db)
     try:
