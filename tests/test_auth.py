@@ -8,6 +8,25 @@ from app.dependencies import pwd_context
 from app.main import app
 
 
+def test_password_hasher_accepts_existing_passlib_bcrypt_hashes():
+    existing_hash = "$2b$12$St8GP7jUoBgIbBod/5xg9eLQS/2wZ4cfMc2VC1OuMXv.6T7ToaTFy"
+
+    assert pwd_context.verify("legacy-password", existing_hash)
+
+
+def test_password_hasher_accepts_long_passwords_from_existing_bcrypt_hashes():
+    existing_hash = "$2b$12$S768o/RPv7FyrRFxkZ4tdOMY7/xplWpgnNTIvBjUOBXJHxxolHiau"
+
+    assert pwd_context.verify("a" * 80, existing_hash)
+
+
+def test_password_hasher_uses_argon2_for_new_hashes():
+    password_hash = pwd_context.hash("new-password")
+
+    assert password_hash.startswith("$argon2")
+    assert pwd_context.verify("new-password", password_hash)
+
+
 class _UnexpectedDB:
     async def execute(self, *_args, **_kwargs):
         raise AssertionError("An unrelated cookie must not trigger authentication")

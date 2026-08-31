@@ -4,12 +4,31 @@ from fastapi.security import OAuth2PasswordBearer, APIKeyHeader
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+from pwdlib import PasswordHash
+from pwdlib.hashers.argon2 import Argon2Hasher
+from pwdlib.hashers.bcrypt import BcryptHasher
 from app.database import get_db
 from app.models.models import User
 from app.config import SESSION_COOKIE_NAME, settings
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+class PasswordHasher:
+    def __init__(self) -> None:
+        self._password_hash = PasswordHash((Argon2Hasher(), BcryptHasher()))
+
+    def hash(self, password: str | bytes) -> str:
+        return self._password_hash.hash(password)
+
+    def verify(self, password: str | bytes, password_hash: str) -> bool:
+        if password_hash.startswith(("$2a$", "$2b$", "$2y$")):
+            password_bytes = (
+                password.encode("utf-8") if isinstance(password, str) else password
+            )
+            password = password_bytes[:72]
+        return self._password_hash.verify(password, password_hash)
+
+
+pwd_context = PasswordHasher()
 
 # For Web UI Login (Cookies/Session would be better but keeping it simple with JWT if needed, 
 # or just use the database session if possible. The prompt says "Bearer token authentication").

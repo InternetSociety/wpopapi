@@ -1,12 +1,10 @@
 import asyncio
 import sys
 import secrets
-from passlib.context import CryptContext
 from sqlalchemy import select
 from app.database import AsyncSessionLocal, init_db
+from app.dependencies import pwd_context
 from app.models.models import User
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 async def create_user(email, password):
     await init_db()
