@@ -16,3 +16,9 @@ numpy==2.5.2
 shapely==2.1.2
 pyproj==3.7.2
 markdown==3.10.3
+alembic==1.16.5
+pytest==8.4.2
+pytest-asyncio==1.2.0
+pytest-cov==7.0.0
+ruff==0.13.2
+mypy==1.18.2

@@ -1,107 +1,98 @@
-from typing import Optional
-from fastapi import Depends, HTTPException, status, Request
-from fastapi.security import OAuth2PasswordBearer, APIKeyHeader
+from typing import Annotated
+
+from fastapi import Depends, Form, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from jose import JWTError, jwt
-from pwdlib import PasswordHash
-from pwdlib.hashers.argon2 import Argon2Hasher
-from pwdlib.hashers.bcrypt import BcryptHasher
+
+from app.config import SESSION_COOKIE_NAME
 from app.database import get_db
 from app.models.models import User
-from app.config import SESSION_COOKIE_NAME, settings
+from app.repositories.tiles import TileRepository
+from app.repositories.users import UserRepository
+from app.services.security import csrf_token_is_valid, password_hasher
+from app.services.users import UserService
+from app.services.worldpop import WorldPopService
 
 
-class PasswordHasher:
-    def __init__(self) -> None:
-        self._password_hash = PasswordHash((Argon2Hasher(), BcryptHasher()))
-
-    def hash(self, password: str | bytes) -> str:
-        return self._password_hash.hash(password)
-
-    def verify(self, password: str | bytes, password_hash: str) -> bool:
-        if password_hash.startswith(("$2a$", "$2b$", "$2y$")):
-            password_bytes = (
-                password.encode("utf-8") if isinstance(password, str) else password
-            )
-            password = password_bytes[:72]
-        return self._password_hash.verify(password, password_hash)
+# Kept as a stable adapter name for callers that need password hashing.
+pwd_context = password_hasher
 
 
-pwd_context = PasswordHasher()
+def get_user_service(db: AsyncSession = Depends(get_db)) -> UserService:
+    return UserService(UserRepository(db))
 
-# For Web UI Login (Cookies/Session would be better but keeping it simple with JWT if needed, 
-# or just use the database session if possible. The prompt says "Bearer token authentication").
-# API uses Bearer Token. Web UI will need some way to know who is logged in.
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token", auto_error=False)
-bearer_header = APIKeyHeader(name="Authorization", auto_error=False)
+def get_worldpop_service(db: AsyncSession = Depends(get_db)) -> WorldPopService:
+    return WorldPopService(db)
+
+
+def get_tile_repository(db: AsyncSession = Depends(get_db)) -> TileRepository:
+    return TileRepository(db)
+
 
 async def get_current_user(
     request: Request,
-    db: AsyncSession = Depends(get_db)
-) -> Optional[User]:
-    # Check Authorization header first
-    auth_header = request.headers.get("Authorization")
-    token = None
-    if auth_header and auth_header.startswith("Bearer "):
-        token = auth_header[7:]
-    
-    # If no token from Authorization header, check cookie
-    if not token:
-        cookie_token = request.cookies.get(SESSION_COOKIE_NAME)
-        if cookie_token:
-            if cookie_token.startswith("Bearer "):
-                token = cookie_token[7:]
-            else:
-                token = cookie_token
+    service: UserService = Depends(get_user_service),
+) -> User | None:
+    authorization = request.headers.get("Authorization")
+    if authorization:
+        scheme, separator, token = authorization.partition(" ")
+        if separator and scheme.lower() == "bearer" and token:
+            return await service.resolve_bearer(token)
+        return None
 
-    if not token:
+    session_token = request.cookies.get(SESSION_COOKIE_NAME)
+    if not session_token:
         return None
-    
-    # Check if token is a bearer token from DB
-    # The prompt says "The user management page should also allow the admin to regenerate the bearer token for any user."
-    # and "it will use bearer token authentication."
-    
-    # First try as a direct bearer token match in DB
-    result = await db.execute(select(User).where(User.bearer_token == token))
-    user = result.scalar_one_or_none()
-    if user:
-        return user
-    
-    # If not found, it might be a JWT session token (for the Web UI)
-    try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        email: str = payload.get("sub")
-        if email is None:
-            return None
-    except JWTError:
-        return None
-        
-    result = await db.execute(select(User).where(User.email == email))
-    user = result.scalar_one_or_none()
-    return user
+    return await service.resolve_session(session_token)
+
 
 async def get_current_active_user(
     request: Request,
-    current_user: Optional[User] = Depends(get_current_user)
+    current_user: User | None = Depends(get_current_user),
 ) -> User:
-    if not current_user:
-        # API routes (under /api) return JSON 401; UI routes redirect to login
-        if request.url.path.startswith("/api"):
+    if current_user is None:
+        if request.url.path.startswith("/api") or request.url.path == "/openapi.json":
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Not authenticated",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        raise HTTPException(status_code=status.HTTP_307_TEMPORARY_REDIRECT, headers={"Location": "/"})
+        raise HTTPException(
+            status_code=status.HTTP_303_SEE_OTHER,
+            headers={"Location": "/"},
+        )
     if not current_user.is_active:
-        raise HTTPException(status_code=400, detail="Inactive user")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Inactive user"
+        )
     return current_user
 
+
 async def get_current_admin_user(
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user),
 ) -> User:
     if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Not enough permissions")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator access required",
+        )
     return current_user
+
+
+async def verify_csrf(
+    request: Request,
+    supplied_token: Annotated[str | None, Form(alias="csrf_token")] = None,
+) -> None:
+    authorization = request.headers.get("Authorization", "")
+    if authorization.lower().startswith("bearer "):
+        return
+    session_token = request.cookies.get(SESSION_COOKIE_NAME)
+    if (
+        not session_token
+        or not supplied_token
+        or not csrf_token_is_valid(session_token, supplied_token)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid CSRF token",
+        )

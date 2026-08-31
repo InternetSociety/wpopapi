@@ -1,133 +1,94 @@
-# WorldPop Population API Server
+# WorldPop Population API
 
-This application provides a web API to query current-year WorldPop population data by country.
+This FastAPI service queries current-year WorldPop population rasters by country. It provides point, radius, and GeoJSON queries, an authenticated Swagger interface, and a small user and tile-cache administration UI.
 
-The dataset currently referenced is an alpha version (R2025A) product and may change over the coming year as improvements are made.
+## Run the service
 
-Bondarenko M., Priyatikanto R., Tejedor-Garavito N., Zhang W., McKeen T., Cunningham A., Woods T., Hilton J., Cihan D., Nosatiuk B., Brinkhoff T., Tatem A., Sorichetta A.. Constrained estimates of 2015-2030 total number of people per grid square at a resolution of 3 arc (approximately 100m at the equator) R2025A version v1. Global Demographic Data Project - Funded by The Bill and Melinda Gates Foundation (INV-045237). WorldPop - School of Geography and Environmental Science, University of Southampton. DOI:10.5258/SOTON/WP00839
+Docker Compose is the only supported application environment. CPython and all application tools run in the `app` container.
 
-## API Documentation
-
-Access the interactive Swagger UI at `/docs`.
-
-### Authentication
-
-The API uses bearer token authentication.
-- Admin users manage the system.
-- Regular users can view their bearer token on the user management page.
-- Use the `Authorize` button in `/docs` to enter your bearer token.
-
-### Endpoints
-
-- `GET /api/pop`
-  - Query parameters: `iso3`, `lat`, `lon`
-  - Returns: `{"pop": 12345}`
-- `GET /api/pop-radius`
-  - Query parameters: `iso3`, `lat`, `lon`, `radius`
-  - `radius` is in metres and defaults to a permitted range of `1` to `100000`
-  - Returns: `{"pop": 12345}`
-- `POST /api/pop-shape`
-  - Query parameters: `iso3`
-  - Form field: `geojson_file` containing a GeoJSON document
-  - Default file size limit: 5 MB
-  - Default vertex limit: 10,000
-  - Returns: `{"pop": 12345}`
-
-### Configurable Limits
-
-Operational limits are defined on `Settings` in `app/config.py`. They can also be
-overridden with environment variables of the same name.
-
-| Setting | Default | Purpose |
-| --- | ---: | --- |
-| `POP_RADIUS_MIN_METERS` | 1 | Minimum population-radius query size |
-| `POP_RADIUS_MAX_METERS` | 100,000 | Maximum population-radius query size |
-| `GEOJSON_MAX_SIZE_BYTES` | 5,242,880 | Maximum uploaded GeoJSON size |
-| `GEOJSON_MAX_VERTICES` | 10,000 | Maximum vertices in uploaded GeoJSON |
-| `TILE_DOWNLOAD_TIMEOUT_SECONDS` | 120 | WorldPop tile download timeout |
-| `TILE_CACHE_EXPIRY_DAYS` | 365 | Cached tile lifetime |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | 10,080 | Login access-token lifetime |
-
-## Query Model
-
-The application always loads and queries the single tile for the requested ISO3 country code.
-- Radius and GeoJSON queries are clipped to that tile.
-- Coverage outside the country tile is ignored.
-- Tile URL configuration lives in `app/config.py`:
-  - `dataset = "Global_2015_2030"`
-  - `release = "R2025A"`
-  - `version = "v1"`
-  - `year = 2025`
-
-## Query Methodology
-
-Population queries are implemented against a single cached GeoTIFF per country code in `app/services/worldpop.py`.
-
-- `GET /api/pop` performs a single-point raster sample with `rasterio.sample(...)`.
-- `GET /api/pop-radius` builds a circular geometry around the supplied centre point, then converts the geometry bounds into a raster window with `rasterio.windows.from_bounds(...)`.
-- `POST /api/pop-shape` parses the uploaded GeoJSON file, extracts one or more geometries, and uses the same raster-window path.
-- Both radius and GeoJSON queries read only the raster window that overlaps the supplied geometry; the full TIFF is not loaded into memory unless the requested window spans the whole tile.
-- The selected window is then masked with `rasterio.features.geometry_mask(...)` so only pixels inside the supplied geometry contribute to the sum.
-- Point and Radius queries require the supplied centre point to fall inside the cached country tile. If the centre is outside the tile bounds, `/api/pop-radius` returns `422` with a detail message.
-- If the requested GeoJSON geometry does not overlap the tile, the API returns a `422` result for GeoJSON intersections with the detail `geojson is not inside the bounds of country {iso3}`.
-- GeoJSON queries may extend beyond the tile bounds. In that case the request proceeds and only the portion overlapping the tile contributes to the population sum.
-
-Key packages used in the query pipeline:
-
-- `rasterio`: TIFF access, windowed reads, masking, and transforms
-- `shapely`: geometry construction, bounds extraction, and geometry operations
-- `pyproj`: coordinate transformation for the radius buffer
-- `numpy`: masked-array handling and summation
-- `httpx`: tile download on cache miss
-- `SQLAlchemy`: cached-tile lookup and persistence
-
-## Tile Caching
-
-The server caches one tile per country code:
-- Identification: requested ISO3 code
-- Download: on demand
-- Storage: `/app/data/tiles`
-- Expiration: cached tiles expire after `TILE_CACHE_EXPIRY_DAYS` and are removed from disk and SQLite
-
-## User Management
-
-The existing user management UI remains available at `/manage-users`.
-
-### CLI User Management
-
-Create an admin user:
+1. Copy `.env.example` to `.env` and set a long, random `SECRET_KEY`. Set `SESSION_COOKIE_SECURE=true` for production HTTPS.
+2. Copy `docker-compose.yml.example` to `docker-compose.yml`.
+3. Build and start the service:
 
 ```bash
-docker exec -it wpopapi-app python manage_users.py create admin@example.com YourSecretPassword
+docker compose up --build
 ```
 
-Remove a user:
+The application is available at `http://localhost:8002`. The SQLite database and downloaded rasters remain in the bind-mounted `app/data` directory.
+
+Do not install Python packages or run Python tools on the host. Declare dependencies in `requirements.txt`, then rebuild the image.
+
+## Database and first administrator
+
+The container applies Alembic migrations when it starts. Use these commands for explicit migration work:
 
 ```bash
-docker exec -it wpopapi-app python manage_users.py remove admin@example.com
+docker compose run --rm app alembic upgrade head
+docker compose run --rm app alembic revision --autogenerate -m "description"
 ```
 
-## Project Structure
+Create or remove an account through the shared user service:
+
+```bash
+docker compose run --rm app python manage_users.py create admin@example.com 'a-long-password'
+docker compose run --rm app python manage_users.py remove user@example.com
+```
+
+The command does not print a password, password hash, JWT, or persistent token.
+
+## Authentication and UI
+
+Open `/` and sign in with an administrator account. Authenticated users can access:
+
+- `/docs` for Swagger
+- `/app-docs` for this guide
+- `/manage-users` for their visible account information
+
+Administrators manage all users. API users receive a random persistent bearer token. Administrators never receive one. `/token` exchanges a valid email and password for a short-lived JWT. Browser sessions use a separate typed JWT in an HTTP-only cookie.
+
+Send API credentials in `Authorization: Bearer TOKEN`. The application tries a persistent token first and then accepts only an access-type JWT. Inactive accounts receive HTTP 403.
+
+## API
+
+- `GET /api/pop` accepts `iso3`, `lat`, and `lon`.
+- `GET /api/pop-radius` also accepts `radius` in metres.
+- `POST /api/pop-shape` accepts `iso3` and a `geojson_file` upload.
+
+All routes return `{"pop": 12345}`. Radius and upload limits are configurable through the settings documented in `.env.example` and `app/config.py`.
+
+The service caches one WorldPop GeoTIFF per ISO3 country code. Raster reads and file writes run outside the async event loop. GeoJSON and radius calculations read only the intersecting raster window.
+
+## Checks
+
+Run every check through Compose:
+
+```bash
+docker compose run --rm app pytest
+docker compose run --rm app pytest --cov=app
+docker compose run --rm app ruff check .
+docker compose run --rm app ruff format --check .
+docker compose run --rm app mypy app/
+```
+
+Tests use a separate SQLite database and isolate database changes with rollback transactions.
+
+## Structure
 
 ```text
-.
-├── app/
-│   ├── main.py
-│   ├── config.py
-│   ├── database.py
-│   ├── dependencies.py
-│   ├── models/
-│   ├── routers/
-│   ├── services/
-│   └── templates/
-├── data_table_setup.sql
-├── docker-compose.yml
-├── Dockerfile
-├── manage_users.py
-└── requirements.txt
+app/
+├── main.py
+├── config.py
+├── database.py
+├── dependencies.py
+├── models/
+├── schemas/
+├── routers/
+├── services/
+├── repositories/
+└── templates/
+tests/
+├── conftest.py
+├── test_routers/
+└── test_services/
+migrations/
 ```
-
-## Notes
-
-- The service only loads the country tile for the requested ISO3 code.
-- Multi-tile coverage is not supported.

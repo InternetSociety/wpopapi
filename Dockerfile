@@ -18,12 +18,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Ensure data directory exists
+COPY docker-entrypoint.sh /usr/local/bin/wpopapi-entrypoint
+RUN chmod +x /usr/local/bin/wpopapi-entrypoint
+
 RUN mkdir -p /app/data/tiles
 
-# The app uses /app/data for persistence
 VOLUME /app/data
 
 EXPOSE 8002
 
+ENTRYPOINT ["/usr/local/bin/wpopapi-entrypoint"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8002"]

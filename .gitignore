@@ -1,10 +1,17 @@
 tunnel.env
+.env
+docker-compose.yml
 
 # Database
-app/data/app.db
+app/data/*.db
 
 # Cached tiles
 app/data/tiles/*.tif
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 
 /.aiassistant/
 /.junie/

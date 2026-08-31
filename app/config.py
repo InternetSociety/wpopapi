@@ -1,13 +1,23 @@
-import os
-from pydantic_settings import BaseSettings
+from pathlib import Path
+
+from pydantic import SecretStr
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
 
 SESSION_COOKIE_NAME = "wpopapi_session"
 
 
 class Settings(BaseSettings):
-    DATABASE_URL: str = "sqlite+aiosqlite:///app/data/app.db"
-    SQL_SETUP_FILE: str = "data_table_setup.sql"
-    TILE_CACHE_DIR: str = "/app/data/tiles"
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        frozen=True,
+    )
+
+    APP_NAME: str = "WorldPop Population API"
+    DATABASE_URL: str
+    TILE_CACHE_DIR: Path = Path("/app/data/tiles")
     TILE_CACHE_EXPIRY_DAYS: int = 365
     TILE_DOWNLOAD_TIMEOUT_SECONDS: float = 120.0
 
@@ -16,12 +26,12 @@ class Settings(BaseSettings):
     GEOJSON_MAX_SIZE_BYTES: int = 5 * 1024 * 1024
     GEOJSON_MAX_VERTICES: int = 10_000
 
-    SECRET_KEY: str = "super-secret-key-change-me"
+    SECRET_KEY: SecretStr
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 1 week
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    SESSION_EXPIRE_MINUTES: int = 60 * 24 * 7
+    SESSION_COOKIE_SECURE: bool = False
 
-    class Config:
-        env_file = ".env"
 
 settings = Settings()
 
@@ -29,10 +39,3 @@ dataset = "Global_2015_2030"
 release = "R2025A"
 version = "v1"
 year = 2025
-
-# Create cache dir if it doesn't exist locally for development
-try:
-    os.makedirs(settings.TILE_CACHE_DIR, exist_ok=True)
-except OSError:
-    # This might fail on read-only file systems during build or in some restricted envs
-    pass
