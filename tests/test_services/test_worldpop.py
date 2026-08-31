@@ -50,7 +50,10 @@ def test_parse_iso3_csv_normalizes_and_deduplicates():
 
 
 def test_parse_iso3_csv_rejects_empty_input():
-    with pytest.raises(ValueError, match="iso3 list must contain at least one valid three-letter ISO country code"):
+    with pytest.raises(
+        ValueError,
+        match="iso3 list must contain at least one valid three-letter ISO country code",
+    ):
         parse_iso3_csv(" , ")
 
 
@@ -92,7 +95,10 @@ async def test_pop_queries_with_local_raster(tmp_path):
 
     assert await service.get_pop("nzl", 7.5, 2.5) == 23
     assert await service.get_pop_radius("nzl", 7.5, 2.5, 2_000_000) == 5050
-    with pytest.raises(CoordinatesOutsideCountryError, match="coordinates supplied are outside of the country specified"):
+    with pytest.raises(
+        CoordinatesOutsideCountryError,
+        match="coordinates supplied are outside of the country specified",
+    ):
         await service.get_pop_radius("nzl", -80.0, 170.0, 10_000)
 
     geojson = {
@@ -105,7 +111,10 @@ async def test_pop_queries_with_local_raster(tmp_path):
         "type": "Polygon",
         "coordinates": [[[20, 20], [21, 20], [21, 21], [20, 21], [20, 20]]],
     }
-    with pytest.raises(GeoJSONOutsideCountryError, match="geojson is not inside the bounds of country NZL"):
+    with pytest.raises(
+        GeoJSONOutsideCountryError,
+        match="geojson is not inside the bounds of country NZL",
+    ):
         await service.get_pop_shape("nzl", outside_geojson)
 
 

@@ -1,22 +1,21 @@
 import json
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, Security, UploadFile
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
 from app.config import settings
-from app.database import get_db
+from app.dependencies import get_current_active_user, get_worldpop_service
+from app.models.models import User
+from app.schemas.schemas import PopulationResponse
 from app.services.worldpop import (
-    CoordinatesOutsideCountryError,
-    GeoJSONOutsideCountryError,
     WorldPopService,
     count_geojson_vertices,
     normalize_iso3,
 )
-from app.dependencies import get_current_active_user
-from app.models.models import User
 
-bearer_scheme = HTTPBearer(auto_error=False)
 
+bearer_scheme = HTTPBearer(auto_error=False, scheme_name="BearerAuth")
 router = APIRouter(prefix="/api", tags=["API"])
 
 
@@ -29,42 +28,40 @@ def _format_byte_size(byte_count: int) -> str:
     return f"{byte_count:,} bytes"
 
 
-@router.get("/pop")
+def _validated_iso3(iso3: str) -> str:
+    try:
+        return normalize_iso3(iso3)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/pop", response_model=PopulationResponse)
 async def get_pop(
     iso3: str,
     lat: float,
     lon: float,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
-    _credentials: HTTPAuthorizationCredentials = Security(bearer_scheme)
-):
-    try:
-        iso3 = normalize_iso3(iso3)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+    service: Annotated[WorldPopService, Depends(get_worldpop_service)],
+    _current_user: Annotated[User, Depends(get_current_active_user)],
+    _credentials: Annotated[
+        HTTPAuthorizationCredentials | None, Security(bearer_scheme)
+    ],
+) -> PopulationResponse:
+    pop = await service.get_pop(_validated_iso3(iso3), lat, lon)
+    return PopulationResponse(pop=pop)
 
-    service = WorldPopService(db)
-    try:
-        pop = await service.get_pop(iso3, lat, lon)
-        return {"pop": pop}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/pop-radius")
+@router.get("/pop-radius", response_model=PopulationResponse)
 async def get_pop_radius(
     iso3: str,
     lat: float,
     lon: float,
     radius: float,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
-    _credentials: HTTPAuthorizationCredentials = Security(bearer_scheme)
-):
-    try:
-        iso3 = normalize_iso3(iso3)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-
+    service: Annotated[WorldPopService, Depends(get_worldpop_service)],
+    _current_user: Annotated[User, Depends(get_current_active_user)],
+    _credentials: Annotated[
+        HTTPAuthorizationCredentials | None, Security(bearer_scheme)
+    ],
+) -> PopulationResponse:
     if not settings.POP_RADIUS_MIN_METERS <= radius <= settings.POP_RADIUS_MAX_METERS:
         minimum = settings.POP_RADIUS_MIN_METERS
         maximum = settings.POP_RADIUS_MAX_METERS
@@ -75,29 +72,20 @@ async def get_pop_radius(
                 f"({maximum / 1000:g} km)."
             ),
         )
-    service = WorldPopService(db)
-    try:
-        pop = await service.get_pop_radius(iso3, lat, lon, radius)
-        return {"pop": pop}
-    except CoordinatesOutsideCountryError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    pop = await service.get_pop_radius(_validated_iso3(iso3), lat, lon, radius)
+    return PopulationResponse(pop=pop)
 
 
-@router.post("/pop-shape")
+@router.post("/pop-shape", response_model=PopulationResponse)
 async def get_pop_shape(
     iso3: str,
-    geojson_file: UploadFile = File(...),
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
-    _credentials: HTTPAuthorizationCredentials = Security(bearer_scheme)
-):
-    try:
-        iso3 = normalize_iso3(iso3)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-
+    geojson_file: Annotated[UploadFile, File()],
+    service: Annotated[WorldPopService, Depends(get_worldpop_service)],
+    _current_user: Annotated[User, Depends(get_current_active_user)],
+    _credentials: Annotated[
+        HTTPAuthorizationCredentials | None, Security(bearer_scheme)
+    ],
+) -> PopulationResponse:
     body = await geojson_file.read(settings.GEOJSON_MAX_SIZE_BYTES + 1)
     if len(body) > settings.GEOJSON_MAX_SIZE_BYTES:
         raise HTTPException(
@@ -107,15 +95,17 @@ async def get_pop_shape(
                 f"{_format_byte_size(settings.GEOJSON_MAX_SIZE_BYTES)} or smaller"
             ),
         )
-
     try:
         geojson = json.loads(body)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=422, detail="geojson file must contain valid JSON")
-
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(
+            status_code=422, detail="geojson file must contain valid JSON"
+        ) from exc
     if not isinstance(geojson, dict):
-        raise HTTPException(status_code=422, detail="geojson file must contain a JSON object")
-
+        raise HTTPException(
+            status_code=422,
+            detail="geojson file must contain a JSON object",
+        )
     if count_geojson_vertices(geojson) > settings.GEOJSON_MAX_VERTICES:
         raise HTTPException(
             status_code=422,
@@ -124,12 +114,5 @@ async def get_pop_shape(
                 "vertices or fewer"
             ),
         )
-
-    service = WorldPopService(db)
-    try:
-        pop = await service.get_pop_shape(iso3, geojson)
-        return {"pop": pop}
-    except GeoJSONOutsideCountryError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    pop = await service.get_pop_shape(_validated_iso3(iso3), geojson)
+    return PopulationResponse(pop=pop)

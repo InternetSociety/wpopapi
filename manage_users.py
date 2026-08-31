@@ -1,74 +1,47 @@
+import argparse
 import asyncio
 import sys
-import secrets
-from sqlalchemy import select
-from app.database import AsyncSessionLocal, init_db
-from app.dependencies import pwd_context
-from app.models.models import User
 
-async def create_user(email, password):
-    await init_db()
-    async with AsyncSessionLocal() as session:
-        # Check if user already exists
-        result = await session.execute(select(User).where(User.email == email))
-        existing_user = result.scalar_one_or_none()
-        if existing_user:
-            print(f"Error: User {email} already exists.")
-            return
+from app.database import AsyncSessionLocal
+from app.repositories.users import UserRepository
+from app.services.exceptions import DomainError
+from app.services.users import UserService
 
-        hashed_password = pwd_context.hash(password)
-        # Admins don't have bearer tokens per user clarification
-        # But wait, user clarification said "Admin is not intended to have a bearer token"
-        # but also "When any user is created through this process a bearer token should also be created and recorded."
-        # I'll stick to: if is_admin=True, token is None (or empty).
-        # Actually the prompt says "Python manage_users.py create admin@esawc.locnet.io passwordhere"
-        # and "Insert the DB row setting the is_admin and is_active booleans to True"
-        
-        new_user = User(
-            email=email,
-            password_hash=hashed_password,
-            is_admin=True,
-            is_active=True,
-            bearer_token=None # Admin doesn't have one
-        )
-        session.add(new_user)
-        await session.commit()
-        print(f"User {email} created successfully as admin.")
 
-async def remove_user(email):
-    await init_db()
-    async with AsyncSessionLocal() as session:
-        result = await session.execute(select(User).where(User.email == email))
-        user = result.scalar_one_or_none()
-        if not user:
-            print(f"Error: User {email} not found.")
-            return
+async def create_admin(email: str, password: str) -> None:
+    async with AsyncSessionLocal() as session, session.begin():
+        await UserService(UserRepository(session)).create_initial_admin(email, password)
+    print(f"Administrator {email.lower()} created.")
 
-        await session.delete(user)
-        await session.commit()
-        print(f"User {email} removed successfully.")
+
+async def remove_user(email: str) -> None:
+    async with AsyncSessionLocal() as session, session.begin():
+        await UserService(UserRepository(session)).remove_user_by_email(email)
+    print(f"User {email.lower()} removed.")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Manage application administrators.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    create = subparsers.add_parser("create", help="Create the first administrator.")
+    create.add_argument("email")
+    create.add_argument("password")
+    remove = subparsers.add_parser("remove", help="Remove a user.")
+    remove.add_argument("email")
+    return parser.parse_args()
+
+
+async def main() -> None:
+    args = parse_args()
+    if args.command == "create":
+        await create_admin(args.email, args.password)
+    else:
+        await remove_user(args.email)
+
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python manage_users.py [create|remove] ...")
-        sys.exit(1)
-    
-    command = sys.argv[1]
-    
-    if command == "create":
-        if len(sys.argv) != 4:
-            print("Usage: python manage_users.py create <email> <password>")
-            sys.exit(1)
-        email = sys.argv[2]
-        password = sys.argv[3]
-        asyncio.run(create_user(email, password))
-    elif command == "remove":
-        if len(sys.argv) != 3:
-            print("Usage: python manage_users.py remove <email>")
-            sys.exit(1)
-        email = sys.argv[2]
-        asyncio.run(remove_user(email))
-    else:
-        print(f"Unknown command: {command}")
-        print("Usage: python manage_users.py [create|remove] ...")
-        sys.exit(1)
+    try:
+        asyncio.run(main())
+    except DomainError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc

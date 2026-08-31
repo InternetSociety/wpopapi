@@ -1,7 +1,8 @@
+import asyncio
 import logging
 import math
 import os
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -11,12 +12,12 @@ import rasterio
 from rasterio.errors import WindowError
 from app.config import dataset, release, settings, version, year
 from app.models.models import CachedTile
+from app.repositories.tiles import TileRepository
 from rasterio.features import geometry_mask
 from rasterio.windows import from_bounds
 from shapely.geometry import GeometryCollection, Point, mapping, shape
 from shapely.geometry import box
 from shapely.ops import transform
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -56,7 +57,9 @@ def parse_iso3_csv(iso3_csv: str) -> list[str]:
         iso3_codes.append(normalized)
 
     if not iso3_codes:
-        raise ValueError("iso3 list must contain at least one valid three-letter ISO country code")
+        raise ValueError(
+            "iso3 list must contain at least one valid three-letter ISO country code"
+        )
 
     return iso3_codes
 
@@ -121,23 +124,28 @@ def _point_within_bounds(bounds: Any, lon: float, lat: float) -> bool:
 class WorldPopService:
     def __init__(self, db: AsyncSession):
         self.db = db
+        self.repository = TileRepository(db)
 
     async def get_tile_path(self, iso3: str, skip_missing: bool = False) -> str:
         iso3 = normalize_iso3(iso3)
 
-        result = await self.db.execute(select(CachedTile).where(CachedTile.tile_id == iso3))
-        cached_tile = result.scalar_one_or_none()
+        cached_tile = await self.repository.get_by_tile_id(iso3)
 
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         expires_at = now + timedelta(days=settings.TILE_CACHE_EXPIRY_DAYS)
 
         if cached_tile:
             cached_tile.last_used_at = now
             cached_tile.expires_at = expires_at
-            await self.db.commit()
+            await self.repository.flush()
             return cached_tile.file_path
 
-        return await self._download_and_cache_tile(iso3, now, expires_at, skip_missing=skip_missing)
+        return await self._download_and_cache_tile(
+            iso3, now, expires_at, skip_missing=skip_missing
+        )
+
+    async def list_cached_tiles(self) -> list[CachedTile]:
+        return await self.repository.list_all()
 
     async def fill_tile_cache(self, iso3_csv: str) -> list[str]:
         iso3_codes = parse_iso3_csv(iso3_csv)
@@ -171,9 +179,10 @@ class WorldPopService:
             if response.status_code != 200:
                 if skip_missing and response.status_code == 404:
                     raise TileNotFoundError(iso3)
-                raise Exception(f"Failed to download tile {iso3} from {url}: {response.status_code}")
-            with open(file_path, "wb") as f:
-                f.write(response.content)
+                raise Exception(
+                    f"Failed to download tile {iso3} from {url}: {response.status_code}"
+                )
+            await asyncio.to_thread(_write_bytes, file_path, response.content)
             logging.info("Completed download of tile %s to %s", iso3, file_path)
 
         new_tile = CachedTile(
@@ -182,41 +191,48 @@ class WorldPopService:
             last_used_at=now,
             expires_at=expires_at,
         )
-        self.db.add(new_tile)
-        await self.db.commit()
+        self.repository.add(new_tile)
+        await self.repository.flush()
 
-        expired_result = await self.db.execute(select(CachedTile).where(CachedTile.expires_at < now))
-        expired_tiles = expired_result.scalars().all()
+        expired_tiles = await self.repository.list_expired(now)
         for expired_tile in expired_tiles:
-            if os.path.exists(expired_tile.file_path):
-                os.remove(expired_tile.file_path)
-            await self.db.delete(expired_tile)
-        await self.db.commit()
+            await asyncio.to_thread(_remove_if_present, expired_tile.file_path)
+            await self.repository.delete(expired_tile)
+        await self.repository.flush()
 
         return file_path
 
     async def get_pop(self, iso3: str, lat: float, lon: float) -> int:
         logging.info("get_pop: iso3=%s lat=%s lon=%s", iso3, lat, lon)
         file_path = await self.get_tile_path(iso3)
-        with rasterio.open(file_path) as src:
-            sample = next(src.sample([(lon, lat)], masked=True))
-            value = sample[0]
-            if np.ma.is_masked(value):
-                return 0
-            return int(round(float(value)))
+        return await asyncio.to_thread(_sample_population, file_path, lat, lon)
 
-    async def get_pop_radius(self, iso3: str, lat: float, lon: float, radius_meters: float) -> int:
-        logging.info("get_pop_radius: iso3=%s lat=%s lon=%s radius=%s", iso3, lat, lon, radius_meters)
+    async def get_pop_radius(
+        self, iso3: str, lat: float, lon: float, radius_meters: float
+    ) -> int:
+        logging.info(
+            "get_pop_radius: iso3=%s lat=%s lon=%s radius=%s",
+            iso3,
+            lat,
+            lon,
+            radius_meters,
+        )
         file_path = await self.get_tile_path(iso3)
-        with rasterio.open(file_path) as src:
-            if not _point_within_bounds(src.bounds, lon, lat):
-                raise CoordinatesOutsideCountryError(
-                    "coordinates supplied are outside of the country specified"
-                )
+        within_bounds = await asyncio.to_thread(
+            _coordinates_within_raster, file_path, lat, lon
+        )
+        if not within_bounds:
+            raise CoordinatesOutsideCountryError(
+                "coordinates supplied are outside of the country specified"
+            )
 
-        aeqd_proj = pyproj.Proj(proj="aeqd", ellps="WGS84", datum="WGS84", lat_0=lat, lon_0=lon)
+        aeqd_proj = pyproj.Proj(
+            proj="aeqd", ellps="WGS84", datum="WGS84", lat_0=lat, lon_0=lon
+        )
         wgs84_proj = pyproj.Proj(proj="latlong", datum="WGS84")
-        project_to_wgs84 = pyproj.Transformer.from_proj(aeqd_proj, wgs84_proj, always_xy=True).transform
+        project_to_wgs84 = pyproj.Transformer.from_proj(
+            aeqd_proj, wgs84_proj, always_xy=True
+        ).transform
         buffer_wgs84 = transform(project_to_wgs84, Point(0, 0).buffer(radius_meters))
         return await self._sum_population_within_geometry(iso3, [buffer_wgs84])
 
@@ -226,43 +242,74 @@ class WorldPopService:
             return 0
         logging.info("get_pop_shape: iso3=%s geometries=%s", iso3, len(geometries))
         file_path = await self.get_tile_path(iso3)
-        with rasterio.open(file_path) as src:
-            tile_bounds = box(*src.bounds)
-            if not any(geom.intersects(tile_bounds) for geom in geometries):
-                raise GeoJSONOutsideCountryError(normalize_iso3(iso3))
+        intersects = await asyncio.to_thread(
+            _geometries_intersect_raster, file_path, geometries
+        )
+        if not intersects:
+            raise GeoJSONOutsideCountryError(normalize_iso3(iso3))
         return await self._sum_population_within_geometry(iso3, geometries)
 
-    async def _sum_population_within_geometry(self, iso3: str, geometries: list[Any]) -> int:
+    async def _sum_population_within_geometry(
+        self, iso3: str, geometries: list[Any]
+    ) -> int:
         file_path = await self.get_tile_path(iso3)
-        with rasterio.open(file_path) as src:
-            bounds = GeometryCollection(geometries).bounds
-            minx, miny, maxx, maxy = bounds
+        return await asyncio.to_thread(_sum_raster_population, file_path, geometries)
 
-            if math.isinf(minx) or math.isinf(miny) or math.isinf(maxx) or math.isinf(maxy):
-                return 0
 
-            win = from_bounds(minx, miny, maxx, maxy, src.transform)
-            try:
-                win = win.intersection(rasterio.windows.Window(0, 0, src.width, src.height))
-            except WindowError:
-                return 0
-            if win.width <= 0 or win.height <= 0:
-                return 0
+def _write_bytes(file_path: str, content: bytes) -> None:
+    with open(file_path, "wb") as output:
+        output.write(content)
 
-            window_data = src.read(1, window=win, masked=True)
-            if window_data.size == 0:
-                return 0
 
-            window_transform = src.window_transform(win)
-            geom_mask = geometry_mask(
-                [mapping(geom) for geom in geometries],
-                transform=window_transform,
-                invert=True,
-                out_shape=window_data.shape,
+def _remove_if_present(file_path: str) -> None:
+    if os.path.exists(file_path):
+        os.remove(file_path)
+
+
+def _sample_population(file_path: str, lat: float, lon: float) -> int:
+    with rasterio.open(file_path) as src:
+        sample = next(src.sample([(lon, lat)], masked=True))
+        value = sample[0]
+        if np.ma.is_masked(value):
+            return 0
+        return int(round(float(value)))
+
+
+def _coordinates_within_raster(file_path: str, lat: float, lon: float) -> bool:
+    with rasterio.open(file_path) as src:
+        return _point_within_bounds(src.bounds, lon, lat)
+
+
+def _geometries_intersect_raster(file_path: str, geometries: list[Any]) -> bool:
+    with rasterio.open(file_path) as src:
+        tile_bounds = box(*src.bounds)
+        return any(geometry.intersects(tile_bounds) for geometry in geometries)
+
+
+def _sum_raster_population(file_path: str, geometries: list[Any]) -> int:
+    with rasterio.open(file_path) as src:
+        minx, miny, maxx, maxy = GeometryCollection(geometries).bounds
+        if any(math.isinf(value) for value in (minx, miny, maxx, maxy)):
+            return 0
+        window = from_bounds(minx, miny, maxx, maxy, src.transform)
+        try:
+            window = window.intersection(
+                rasterio.windows.Window(0, 0, src.width, src.height)
             )
-            valid_mask = geom_mask & ~np.ma.getmaskarray(window_data)
-            if not valid_mask.any():
-                return 0
-
-            total = float(window_data.data[valid_mask].sum())
-            return int(round(total))
+        except WindowError:
+            return 0
+        if window.width <= 0 or window.height <= 0:
+            return 0
+        window_data = src.read(1, window=window, masked=True)
+        if window_data.size == 0:
+            return 0
+        geom_mask = geometry_mask(
+            [mapping(geometry) for geometry in geometries],
+            transform=src.window_transform(window),
+            invert=True,
+            out_shape=window_data.shape,
+        )
+        valid_mask = geom_mask & ~np.ma.getmaskarray(window_data)
+        if not valid_mask.any():
+            return 0
+        return int(round(float(window_data.data[valid_mask].sum())))

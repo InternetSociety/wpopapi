@@ -1,25 +1,38 @@
-from typing import Optional, Dict
-from pydantic import BaseModel, EmailStr
+from datetime import datetime
 
-class UserBase(BaseModel):
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
+
+
+class UserCreate(BaseModel):
     email: EmailStr
-
-class UserCreate(UserBase):
-    password: str
+    password: str = Field(min_length=8, max_length=128)
     is_admin: bool = False
 
-class UserResponse(UserBase):
+
+class UserUpdate(BaseModel):
+    is_active: bool | None = None
+    is_admin: bool | None = None
+
+
+class UserPublicResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
+    email: EmailStr
     is_active: bool
     is_admin: bool
-    password_hash: str # Specified to show hash in management
-    bearer_token: Optional[str] # Specified to show unencrypted token
+    created_at: datetime
+    last_login_at: datetime | None
 
-    class Config:
-        from_attributes = True
 
-class LandCoverResponse(BaseModel):
-    land_cover_class: int # rename to 'class' in response if needed
+class UserCredentialResponse(UserPublicResponse):
+    bearer_token: str | None
 
-class LandCoverFractionsResponse(BaseModel):
-    fractions: Dict[str, float]
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+class PopulationResponse(BaseModel):
+    pop: int
