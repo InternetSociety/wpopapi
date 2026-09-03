@@ -26,11 +26,19 @@ class Settings(BaseSettings):
     GEOJSON_MAX_SIZE_BYTES: int = 5 * 1024 * 1024
     GEOJSON_MAX_VERTICES: int = 10_000
 
+    PASSWORD_MIN_LENGTH: int = 12
+    PASSWORD_MAX_LENGTH: int = 128
+
     SECRET_KEY: SecretStr
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     SESSION_EXPIRE_MINUTES: int = 60 * 24 * 7
     SESSION_COOKIE_SECURE: bool = False
+
+    SMTP_ENABLED: bool = False
+    SMTP_HOST: str = "localhost"
+    SMTP_PORT: int = 25
+    SMTP_SENDER: str = "noreply@example.invalid"
 
 
 settings = Settings()

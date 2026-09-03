@@ -1,12 +1,14 @@
+import hashlib
 import re
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import SESSION_COOKIE_NAME
-from app.dependencies import get_worldpop_service
+from app.dependencies import get_password_reset_mailer, get_worldpop_service
 from app.main import app
 from app.models.models import User
 from app.repositories.users import UserRepository
@@ -254,3 +256,136 @@ async def test_cookie_authenticated_mutation_requires_csrf(
         f"/users/{user.id}/regen-token", data={"csrf_token": csrf}
     )
     assert accepted.status_code == 303
+
+
+@pytest.mark.asyncio
+async def test_password_reset_request_does_not_disclose_account_eligibility(
+    client: AsyncClient, user_factory: UserFactory
+) -> None:
+    active = await user_factory("active@example.com")
+    await user_factory("inactive@example.com", is_active=False)
+    sent_codes: list[tuple[str, str]] = []
+
+    class FakeMailer:
+        async def send(self, recipient: str, code: str) -> None:
+            sent_codes.append((recipient, code))
+
+    app.dependency_overrides[get_password_reset_mailer] = lambda: FakeMailer()
+    responses = [
+        await client.post("/forgot-password", data={"email": email})
+        for email in ("unknown@example.com", "inactive@example.com", active.email)
+    ]
+    assert [response.status_code for response in responses] == [303, 303, 303]
+    assert len({response.text for response in responses}) == 1
+    assert sent_codes and sent_codes[0][0] == active.email
+    assert sent_codes[0][1] not in responses[-1].text
+    assert active.reset_token_hash is not None
+    assert active.reset_token_hash != sent_codes[0][1]
+    assert active.reset_token_expires_at is not None
+    expires_at = active.reset_token_expires_at.replace(tzinfo=UTC)
+    assert (
+        timedelta(minutes=29) < expires_at - datetime.now(UTC) <= timedelta(minutes=30)
+    )
+
+
+@pytest.mark.asyncio
+async def test_password_reset_changes_password_once_and_redirects(
+    client: AsyncClient, user_factory: UserFactory
+) -> None:
+    user = await user_factory("reset@example.com")
+    sent_codes: list[str] = []
+
+    class FakeMailer:
+        async def send(self, _recipient: str, code: str) -> None:
+            sent_codes.append(code)
+
+    app.dependency_overrides[get_password_reset_mailer] = lambda: FakeMailer()
+    await client.post("/forgot-password", data={"email": user.email})
+    reset = await client.post(
+        "/reset-password", data={"code": sent_codes[0], "password": "new-password"}
+    )
+    assert reset.status_code == 303
+    assert reset.headers["location"] == "/?status=password_reset"
+    assert user.reset_token_hash is None
+    assert user.reset_token_expires_at is None
+    signed_in = await client.post(
+        "/login", data={"username": user.email, "password": "new-password"}
+    )
+    assert signed_in.status_code == 303
+    reused = await client.post(
+        "/reset-password", data={"code": sent_codes[0], "password": "another-password"}
+    )
+    assert reused.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_invalid_expired_and_inactive_reset_codes_do_not_change_password(
+    client: AsyncClient, user_factory: UserFactory
+) -> None:
+    user = await user_factory("expired@example.com")
+    user.reset_token_hash = hashlib.sha256(b"expired").hexdigest()
+    user.reset_token_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    inactive = await user_factory("inactive-reset@example.com", is_active=False)
+    inactive.reset_token_hash = hashlib.sha256(b"inactive").hexdigest()
+    inactive.reset_token_expires_at = datetime.now(UTC) + timedelta(minutes=30)
+    for code in ("unknown", "expired", "inactive"):
+        response = await client.post(
+            "/reset-password", data={"code": code, "password": "new-password"}
+        )
+        assert response.status_code == 400
+    assert (
+        await client.post(
+            "/login", data={"username": user.email, "password": "correct-horse"}
+        )
+    ).status_code == 303
+
+
+@pytest.mark.asyncio
+async def test_second_password_reset_request_invalidates_the_first_code(
+    client: AsyncClient, user_factory: UserFactory
+) -> None:
+    user = await user_factory("twice@example.com")
+    sent_codes: list[str] = []
+
+    class FakeMailer:
+        async def send(self, _recipient: str, code: str) -> None:
+            sent_codes.append(code)
+
+    app.dependency_overrides[get_password_reset_mailer] = lambda: FakeMailer()
+    await client.post("/forgot-password", data={"email": user.email})
+    await client.post("/forgot-password", data={"email": user.email})
+    first = await client.post(
+        "/reset-password", data={"code": sent_codes[0], "password": "new-password"}
+    )
+    second = await client.post(
+        "/reset-password", data={"code": sent_codes[1], "password": "new-password"}
+    )
+    assert first.status_code == 400
+    assert second.status_code == 303
+
+
+@pytest.mark.asyncio
+async def test_password_reset_delivery_failure_clears_code_and_acknowledges_request(
+    client: AsyncClient, user_factory: UserFactory
+) -> None:
+    user = await user_factory("delivery@example.com")
+
+    class FailingMailer:
+        async def send(self, _recipient: str, _code: str) -> None:
+            raise OSError("unavailable")
+
+    app.dependency_overrides[get_password_reset_mailer] = lambda: FailingMailer()
+    response = await client.post("/forgot-password", data={"email": user.email})
+    assert response.status_code == 303
+    assert user.reset_token_hash is None
+    assert user.reset_token_expires_at is None
+
+
+@pytest.mark.asyncio
+async def test_non_administrator_cannot_view_tile_cache(
+    client: AsyncClient, user_factory: UserFactory
+) -> None:
+    user = await user_factory("user@example.com")
+    await sign_in(client, user.email)
+    response = await client.get("/tile-cache")
+    assert response.status_code == 403

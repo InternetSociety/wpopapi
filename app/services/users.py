@@ -1,5 +1,8 @@
+import hashlib
+import logging
 import secrets
-from datetime import UTC, datetime
+import smtplib
+from datetime import UTC, datetime, timedelta
 
 from pydantic import EmailStr, TypeAdapter, ValidationError
 from sqlalchemy.exc import IntegrityError
@@ -11,11 +14,13 @@ from app.services.exceptions import (
     EmailAlreadyExistsError,
     InactiveUserError,
     InvalidCredentialsError,
+    InvalidResetCodeError,
     InvalidUserDataError,
     ProhibitedUserOperationError,
     UserNotFoundError,
 )
 from app.services.security import create_jwt, decode_jwt, password_hasher
+from app.services.email import PasswordResetMailer
 
 
 class UserService:
@@ -63,10 +68,7 @@ class UserService:
         return [current_user]
 
     async def create_user(self, email: str, password: str, is_admin: bool) -> User:
-        if not 8 <= len(password) <= 128:
-            raise InvalidUserDataError(
-                "Password length must be between 8 and 128 characters"
-            )
+        self.validate_password(password)
         normalized_email = self.normalize_email(email)
         if await self.repository.get_by_email(normalized_email):
             raise EmailAlreadyExistsError("A user with that email already exists")
@@ -85,6 +87,51 @@ class UserService:
                 "A user with that email already exists"
             ) from exc
         return user
+
+    @staticmethod
+    def validate_password(password: str) -> None:
+        minimum = settings.PASSWORD_MIN_LENGTH
+        maximum = settings.PASSWORD_MAX_LENGTH
+        if not minimum <= len(password) <= maximum:
+            raise InvalidUserDataError(
+                f"Password length must be between {minimum} and {maximum} characters"
+            )
+
+    async def request_password_reset(
+        self, email: str, mailer: PasswordResetMailer
+    ) -> None:
+        user = await self.repository.get_by_email(self.normalize_email(email))
+        if user is None or not user.is_active:
+            return
+
+        code = secrets.token_urlsafe(48)
+        user.reset_token_hash = hashlib.sha256(code.encode()).hexdigest()
+        user.reset_token_expires_at = datetime.now(UTC) + timedelta(minutes=30)
+        await self.repository.flush()
+        try:
+            await mailer.send(user.email, code)
+        except OSError, smtplib.SMTPException:
+            user.reset_token_hash = None
+            user.reset_token_expires_at = None
+            await self.repository.flush()
+            logging.exception("Password-reset email delivery failed")
+
+    async def reset_password(self, code: str, password: str) -> None:
+        token_hash = hashlib.sha256(code.encode()).hexdigest()
+        user = await self.repository.get_by_reset_token_hash(token_hash)
+        now = datetime.now(UTC)
+        if (
+            user is None
+            or not user.is_active
+            or user.reset_token_expires_at is None
+            or _as_utc(user.reset_token_expires_at) < now
+        ):
+            raise InvalidResetCodeError("The reset code is invalid or has expired")
+        self.validate_password(password)
+        user.password_hash = password_hasher.hash(password)
+        user.reset_token_hash = None
+        user.reset_token_expires_at = None
+        await self.repository.flush()
 
     async def create_initial_admin(self, email: str, password: str) -> User:
         return await self.create_user(email, password, is_admin=True)
@@ -153,3 +200,7 @@ class UserService:
             raise ProhibitedUserOperationError(
                 "The last active administrator must remain active"
             )
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)

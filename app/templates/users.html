@@ -2,6 +2,9 @@
 {% block title %}Users · {{ app_name }}{% endblock %}
 {% block content %}
 <h1 class="mb-4">Users</h1>
+{% if error %}
+<div class="alert alert-danger" role="alert">{{ error }}</div>
+{% endif %}
 {% if current_user.is_admin %}
 <section class="card mb-4" aria-labelledby="create-user-heading">
   <div class="card-body">
@@ -14,7 +17,7 @@
       </div>
       <div class="col-md-4">
         <label for="new-password" class="form-label">Password</label>
-        <input id="new-password" name="password" type="password" class="form-control" minlength="8" maxlength="128" required>
+        <input id="new-password" name="password" type="password" class="form-control" minlength="{{ password_min_length }}" maxlength="{{ password_max_length }}" required>
       </div>
       <div class="col-md-2">
         <div class="form-check mb-2">

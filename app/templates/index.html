@@ -7,6 +7,9 @@
     <p>Signed in as <strong>{{ current_user.email }}</strong>.</p>
     <p><a class="btn btn-primary" href="/docs">Open API documentation</a></p>
     {% else %}
+    {% if status == 'password_reset' %}
+    <div class="alert alert-success" role="alert">Your password has been reset. Please sign in.</div>
+    {% endif %}
     {% if error %}
     <div class="alert alert-danger" role="alert">
       The email or password is incorrect, or the account is inactive.
@@ -22,9 +25,10 @@
           </div>
           <div class="mb-3">
             <label for="password" class="form-label">Password</label>
-            <input id="password" name="password" type="password" class="form-control" autocomplete="current-password" minlength="8" maxlength="128" required>
+            <input id="password" name="password" type="password" class="form-control" autocomplete="current-password" minlength="{{ password_min_length }}" maxlength="{{ password_max_length }}" required>
           </div>
           <button type="submit" class="btn btn-primary">Sign in</button>
+          <a class="ms-3" href="/forgot-password">Forgot password?</a>
         </form>
       </div>
     </div>

@@ -8,11 +8,7 @@ from app.config import settings
 from app.dependencies import get_current_active_user, get_worldpop_service
 from app.models.models import User
 from app.schemas.schemas import PopulationResponse
-from app.services.worldpop import (
-    WorldPopService,
-    count_geojson_vertices,
-    normalize_iso3,
-)
+from app.services.worldpop import WorldPopService
 
 
 bearer_scheme = HTTPBearer(auto_error=False, scheme_name="BearerAuth")
@@ -28,13 +24,6 @@ def _format_byte_size(byte_count: int) -> str:
     return f"{byte_count:,} bytes"
 
 
-def _validated_iso3(iso3: str) -> str:
-    try:
-        return normalize_iso3(iso3)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
 @router.get("/pop", response_model=PopulationResponse)
 async def get_pop(
     iso3: str,
@@ -46,7 +35,7 @@ async def get_pop(
         HTTPAuthorizationCredentials | None, Security(bearer_scheme)
     ],
 ) -> PopulationResponse:
-    pop = await service.get_pop(_validated_iso3(iso3), lat, lon)
+    pop = await service.get_pop(iso3, lat, lon)
     return PopulationResponse(pop=pop)
 
 
@@ -62,17 +51,7 @@ async def get_pop_radius(
         HTTPAuthorizationCredentials | None, Security(bearer_scheme)
     ],
 ) -> PopulationResponse:
-    if not settings.POP_RADIUS_MIN_METERS <= radius <= settings.POP_RADIUS_MAX_METERS:
-        minimum = settings.POP_RADIUS_MIN_METERS
-        maximum = settings.POP_RADIUS_MAX_METERS
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"radius must be between {minimum:g} and {maximum:g} metres "
-                f"({maximum / 1000:g} km)."
-            ),
-        )
-    pop = await service.get_pop_radius(_validated_iso3(iso3), lat, lon, radius)
+    pop = await service.get_pop_radius(iso3, lat, lon, radius)
     return PopulationResponse(pop=pop)
 
 
@@ -106,13 +85,5 @@ async def get_pop_shape(
             status_code=422,
             detail="geojson file must contain a JSON object",
         )
-    if count_geojson_vertices(geojson) > settings.GEOJSON_MAX_VERTICES:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"geojson must contain {settings.GEOJSON_MAX_VERTICES:,} "
-                "vertices or fewer"
-            ),
-        )
-    pop = await service.get_pop_shape(_validated_iso3(iso3), geojson)
+    pop = await service.get_pop_shape(iso3, geojson)
     return PopulationResponse(pop=pop)

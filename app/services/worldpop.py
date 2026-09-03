@@ -13,6 +13,7 @@ from rasterio.errors import WindowError
 from app.config import dataset, release, settings, version, year
 from app.models.models import CachedTile
 from app.repositories.tiles import TileRepository
+from app.services.exceptions import InvalidPopulationInputError
 from rasterio.features import geometry_mask
 from rasterio.windows import from_bounds
 from shapely.geometry import GeometryCollection, Point, mapping, shape
@@ -203,6 +204,7 @@ class WorldPopService:
         return file_path
 
     async def get_pop(self, iso3: str, lat: float, lon: float) -> int:
+        iso3 = self._normalize_iso3(iso3)
         logging.info("get_pop: iso3=%s lat=%s lon=%s", iso3, lat, lon)
         file_path = await self.get_tile_path(iso3)
         return await asyncio.to_thread(_sample_population, file_path, lat, lon)
@@ -210,6 +212,8 @@ class WorldPopService:
     async def get_pop_radius(
         self, iso3: str, lat: float, lon: float, radius_meters: float
     ) -> int:
+        iso3 = self._normalize_iso3(iso3)
+        self.validate_radius(radius_meters)
         logging.info(
             "get_pop_radius: iso3=%s lat=%s lon=%s radius=%s",
             iso3,
@@ -237,6 +241,8 @@ class WorldPopService:
         return await self._sum_population_within_geometry(iso3, [buffer_wgs84])
 
     async def get_pop_shape(self, iso3: str, geojson: dict) -> int:
+        iso3 = self._normalize_iso3(iso3)
+        self.validate_geojson(geojson)
         geometries = _extract_geometries(geojson)
         if not geometries:
             return 0
@@ -248,6 +254,36 @@ class WorldPopService:
         if not intersects:
             raise GeoJSONOutsideCountryError(normalize_iso3(iso3))
         return await self._sum_population_within_geometry(iso3, geometries)
+
+    @staticmethod
+    def validate_radius(radius_meters: float) -> None:
+        if (
+            settings.POP_RADIUS_MIN_METERS
+            <= radius_meters
+            <= settings.POP_RADIUS_MAX_METERS
+        ):
+            return
+        minimum = settings.POP_RADIUS_MIN_METERS
+        maximum = settings.POP_RADIUS_MAX_METERS
+        raise InvalidPopulationInputError(
+            f"radius must be between {minimum:g} and {maximum:g} metres "
+            f"({maximum / 1000:g} km)."
+        )
+
+    @staticmethod
+    def validate_geojson(geojson: dict) -> None:
+        if count_geojson_vertices(geojson) > settings.GEOJSON_MAX_VERTICES:
+            raise InvalidPopulationInputError(
+                f"geojson must contain {settings.GEOJSON_MAX_VERTICES:,} "
+                "vertices or fewer"
+            )
+
+    @staticmethod
+    def _normalize_iso3(iso3: str) -> str:
+        try:
+            return normalize_iso3(iso3)
+        except ValueError as exc:
+            raise InvalidPopulationInputError(str(exc)) from exc
 
     async def _sum_population_within_geometry(
         self, iso3: str, geometries: list[Any]

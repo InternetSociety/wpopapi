@@ -1,8 +1,12 @@
+import warnings
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 import rasterio
 from rasterio.transform import from_origin
 
+import app.services.worldpop as worldpop
 from app.config import dataset, release, version, year
 from app.services.worldpop import (
     CoordinatesOutsideCountryError,
@@ -82,7 +86,9 @@ def test_vertex_count():
 
 
 @pytest.mark.asyncio
-async def test_pop_queries_with_local_raster(tmp_path):
+async def test_pop_queries_with_local_raster(
+    tmp_path, monkeypatch, suppress_rasterio_affine_warning
+):
     raster_path = tmp_path / "NZL_pop.tif"
     _write_test_raster(raster_path)
 
@@ -92,6 +98,15 @@ async def test_pop_queries_with_local_raster(tmp_path):
         return str(raster_path)
 
     service.get_tile_path = fake_get_tile_path  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        worldpop,
+        "settings",
+        SimpleNamespace(
+            POP_RADIUS_MIN_METERS=1,
+            POP_RADIUS_MAX_METERS=2_000_000,
+            GEOJSON_MAX_VERTICES=10_000,
+        ),
+    )
 
     assert await service.get_pop("nzl", 7.5, 2.5) == 23
     assert await service.get_pop_radius("nzl", 7.5, 2.5, 2_000_000) == 5050
@@ -116,6 +131,13 @@ async def test_pop_queries_with_local_raster(tmp_path):
         match="geojson is not inside the bounds of country NZL",
     ):
         await service.get_pop_shape("nzl", outside_geojson)
+
+
+@pytest.fixture
+def suppress_rasterio_affine_warning():
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", PendingDeprecationWarning)
+        yield
 
 
 @pytest.mark.asyncio

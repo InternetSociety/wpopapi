@@ -21,6 +21,12 @@ class UserRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_by_reset_token_hash(self, token_hash: str) -> User | None:
+        result = await self.session.execute(
+            select(User).where(User.reset_token_hash == token_hash)
+        )
+        return result.scalar_one_or_none()
+
     async def list_all(self) -> list[User]:
         result = await self.session.execute(select(User).order_by(User.email))
         return list(result.scalars().all())

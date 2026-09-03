@@ -53,6 +53,7 @@ def decode_jwt(token: str, expected_type: CredentialType) -> str | None:
             token,
             settings.SECRET_KEY.get_secret_value(),
             algorithms=[settings.ALGORITHM],
+            options={"require_exp": True, "require_sub": True},
         )
     except JWTError:
         return None

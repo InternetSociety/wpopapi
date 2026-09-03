@@ -9,6 +9,7 @@ from app.models.models import User
 from app.repositories.tiles import TileRepository
 from app.repositories.users import UserRepository
 from app.services.security import csrf_token_is_valid, password_hasher
+from app.services.email import PasswordResetMailer
 from app.services.users import UserService
 from app.services.worldpop import WorldPopService
 
@@ -23,6 +24,10 @@ def get_user_service(db: AsyncSession = Depends(get_db)) -> UserService:
 
 def get_worldpop_service(db: AsyncSession = Depends(get_db)) -> WorldPopService:
     return WorldPopService(db)
+
+
+def get_password_reset_mailer() -> PasswordResetMailer:
+    return PasswordResetMailer()
 
 
 def get_tile_repository(db: AsyncSession = Depends(get_db)) -> TileRepository:

@@ -24,3 +24,11 @@ class ProhibitedUserOperationError(DomainError):
 
 class InvalidUserDataError(DomainError):
     status_code = 400
+
+
+class InvalidResetCodeError(DomainError):
+    status_code = 400
+
+
+class InvalidPopulationInputError(DomainError):
+    status_code = 422
