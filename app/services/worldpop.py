@@ -130,20 +130,16 @@ class WorldPopService:
     async def get_tile_path(self, iso3: str, skip_missing: bool = False) -> str:
         iso3 = normalize_iso3(iso3)
 
-        cached_tile = await self.repository.get_by_tile_id(iso3)
+        cached_path = await self.get_cached_tile_path(iso3)
+        if cached_path:
+            return cached_path
 
-        now = datetime.now(UTC)
-        expires_at = now + timedelta(days=settings.TILE_CACHE_EXPIRY_DAYS)
+        file_path = await self.download_tile_file(iso3, skip_missing=skip_missing)
+        return await self.cache_downloaded_tile(iso3, file_path)
 
-        if cached_tile:
-            cached_tile.last_used_at = now
-            cached_tile.expires_at = expires_at
-            await self.repository.flush()
-            return cached_tile.file_path
-
-        return await self._download_and_cache_tile(
-            iso3, now, expires_at, skip_missing=skip_missing
-        )
+    async def get_cached_tile_path(self, iso3: str) -> str | None:
+        cached_tile = await self.repository.get_by_tile_id(normalize_iso3(iso3))
+        return cached_tile.file_path if cached_tile else None
 
     async def list_cached_tiles(self) -> list[CachedTile]:
         return await self.repository.list_all()
@@ -160,13 +156,9 @@ class WorldPopService:
 
         return cached_tiles
 
-    async def _download_and_cache_tile(
-        self,
-        iso3: str,
-        now: datetime,
-        expires_at: datetime,
-        skip_missing: bool = False,
-    ) -> str:
+    @staticmethod
+    async def download_tile_file(iso3: str, skip_missing: bool = False) -> str:
+        iso3 = normalize_iso3(iso3)
         url = get_worldpop_url(iso3)
         file_name = os.path.basename(url)
         file_path = os.path.join(settings.TILE_CACHE_DIR, file_name)
@@ -186,20 +178,29 @@ class WorldPopService:
             await asyncio.to_thread(_write_bytes, file_path, response.content)
             logging.info("Completed download of tile %s to %s", iso3, file_path)
 
-        new_tile = CachedTile(
-            tile_id=iso3,
-            file_path=file_path,
-            last_used_at=now,
-            expires_at=expires_at,
-        )
-        self.repository.add(new_tile)
-        await self.repository.flush()
+        return file_path
 
+    async def cache_downloaded_tile(self, iso3: str, file_path: str) -> str:
+        iso3 = normalize_iso3(iso3)
+        cached_path = await self.get_cached_tile_path(iso3)
+        if cached_path:
+            return cached_path
+
+        now = datetime.now(UTC)
+        expires_at = now + timedelta(days=settings.TILE_CACHE_EXPIRY_DAYS)
         expired_tiles = await self.repository.list_expired(now)
         for expired_tile in expired_tiles:
             await asyncio.to_thread(_remove_if_present, expired_tile.file_path)
             await self.repository.delete(expired_tile)
-        await self.repository.flush()
+
+        self.repository.add(
+            CachedTile(
+                tile_id=iso3,
+                file_path=file_path,
+                last_used_at=now,
+                expires_at=expires_at,
+            )
+        )
 
         return file_path
 
@@ -238,7 +239,7 @@ class WorldPopService:
             aeqd_proj, wgs84_proj, always_xy=True
         ).transform
         buffer_wgs84 = transform(project_to_wgs84, Point(0, 0).buffer(radius_meters))
-        return await self._sum_population_within_geometry(iso3, [buffer_wgs84])
+        return await self._sum_population_within_geometry(file_path, [buffer_wgs84])
 
     async def get_pop_shape(self, iso3: str, geojson: dict) -> int:
         iso3 = self._normalize_iso3(iso3)
@@ -253,7 +254,7 @@ class WorldPopService:
         )
         if not intersects:
             raise GeoJSONOutsideCountryError(normalize_iso3(iso3))
-        return await self._sum_population_within_geometry(iso3, geometries)
+        return await self._sum_population_within_geometry(file_path, geometries)
 
     @staticmethod
     def validate_radius(radius_meters: float) -> None:
@@ -286,9 +287,8 @@ class WorldPopService:
             raise InvalidPopulationInputError(str(exc)) from exc
 
     async def _sum_population_within_geometry(
-        self, iso3: str, geometries: list[Any]
+        self, file_path: str, geometries: list[Any]
     ) -> int:
-        file_path = await self.get_tile_path(iso3)
         return await asyncio.to_thread(_sum_raster_population, file_path, geometries)
 
 

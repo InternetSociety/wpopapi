@@ -10,7 +10,10 @@ class Base(DeclarativeBase):
     pass
 
 
-engine = create_async_engine(settings.DATABASE_URL)
+engine = create_async_engine(
+    settings.DATABASE_URL,
+    connect_args={"timeout": 30},
+)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 

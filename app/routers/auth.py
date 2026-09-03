@@ -34,7 +34,7 @@ from app.services.exceptions import (
 from app.services.email import PasswordResetMailer
 from app.services.security import csrf_token
 from app.services.users import UserService
-from app.services.worldpop import WorldPopService, parse_iso3_csv
+from app.services.worldpop import TileNotFoundError, WorldPopService, parse_iso3_csv
 
 
 router = APIRouter(tags=["Authentication"])
@@ -67,11 +67,22 @@ async def _manage_users_error(
 
 
 async def _process_tile_cache_fill(iso3_codes: str) -> None:
-    try:
-        async with AsyncSessionLocal() as session, session.begin():
-            await WorldPopService(session).fill_tile_cache(iso3_codes)
-    except Exception:
-        logging.exception("Tile cache fill task failed for requested country codes")
+    for iso3 in parse_iso3_csv(iso3_codes):
+        try:
+            async with AsyncSessionLocal() as session:
+                if await WorldPopService(session).get_cached_tile_path(iso3):
+                    continue
+
+            file_path = await WorldPopService.download_tile_file(
+                iso3, skip_missing=True
+            )
+
+            async with AsyncSessionLocal() as session, session.begin():
+                await WorldPopService(session).cache_downloaded_tile(iso3, file_path)
+        except TileNotFoundError:
+            logging.info("Skipping missing tile %s during cache fill", iso3)
+        except Exception:
+            logging.exception("Tile cache fill task failed for country %s", iso3)
 
 
 @router.get("/", response_class=HTMLResponse, include_in_schema=False)

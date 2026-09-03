@@ -7,6 +7,7 @@ import rasterio
 from rasterio.transform import from_origin
 
 import app.services.worldpop as worldpop
+from app.routers import auth
 from app.config import dataset, release, version, year
 from app.services.worldpop import (
     CoordinatesOutsideCountryError,
@@ -93,8 +94,10 @@ async def test_pop_queries_with_local_raster(
     _write_test_raster(raster_path)
 
     service = WorldPopService(db=object())
+    tile_requests = []
 
-    async def fake_get_tile_path(_iso3):
+    async def fake_get_tile_path(iso3):
+        tile_requests.append(iso3)
         return str(raster_path)
 
     service.get_tile_path = fake_get_tile_path  # type: ignore[method-assign]
@@ -131,6 +134,8 @@ async def test_pop_queries_with_local_raster(
         match="geojson is not inside the bounds of country NZL",
     ):
         await service.get_pop_shape("nzl", outside_geojson)
+
+    assert tile_requests == ["NZL", "NZL", "NZL", "NZL", "NZL"]
 
 
 @pytest.fixture
@@ -191,7 +196,88 @@ async def test_get_tile_path_propagates_missing_tile_error(monkeypatch):
     async def fake_download(*args, **kwargs):
         raise TileNotFoundError("NZL")
 
-    monkeypatch.setattr(service, "_download_and_cache_tile", fake_download)
+    monkeypatch.setattr(service, "download_tile_file", fake_download)
 
     with pytest.raises(TileNotFoundError, match="no tile available for country NZL"):
         await service.get_tile_path("nzl")
+
+
+@pytest.mark.asyncio
+async def test_get_tile_path_does_not_write_when_tile_is_cached():
+    class FakeRepository:
+        async def get_by_tile_id(self, _tile_id):
+            return SimpleNamespace(file_path="/tmp/NZL.tif")
+
+        async def flush(self):
+            pytest.fail("cached tile lookup must not flush a database write")
+
+    service = WorldPopService(db=object())
+    service.repository = FakeRepository()
+
+    assert await service.get_tile_path("nzl") == "/tmp/NZL.tif"
+
+
+@pytest.mark.asyncio
+async def test_cache_fill_releases_database_session_before_downloading(monkeypatch):
+    events = []
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            events.append("persist transaction started")
+
+        async def __aexit__(self, *_args):
+            events.append("persist transaction ended")
+
+    class FakeSession:
+        async def __aenter__(self):
+            events.append("session opened")
+            return self
+
+        async def __aexit__(self, *_args):
+            events.append("session closed")
+
+        def begin(self):
+            return FakeTransaction()
+
+    class FakeSessionFactory:
+        def __call__(self):
+            return FakeSession()
+
+    async def fake_get_cached_tile_path(_self, _iso3):
+        events.append("cache checked")
+        return None
+
+    async def fake_download_tile_file(_iso3, skip_missing=False):
+        assert skip_missing is True
+        assert events == ["session opened", "cache checked", "session closed"]
+        events.append("tile downloaded")
+        return "/tmp/NZL.tif"
+
+    async def fake_cache_downloaded_tile(_self, _iso3, _file_path):
+        events.append("tile cached")
+        return _file_path
+
+    monkeypatch.setattr(auth, "AsyncSessionLocal", FakeSessionFactory())
+    monkeypatch.setattr(
+        auth.WorldPopService, "get_cached_tile_path", fake_get_cached_tile_path
+    )
+    monkeypatch.setattr(
+        auth.WorldPopService, "download_tile_file", fake_download_tile_file
+    )
+    monkeypatch.setattr(
+        auth.WorldPopService, "cache_downloaded_tile", fake_cache_downloaded_tile
+    )
+
+    await auth._process_tile_cache_fill("nzl")
+
+    assert events == [
+        "session opened",
+        "cache checked",
+        "session closed",
+        "tile downloaded",
+        "session opened",
+        "persist transaction started",
+        "tile cached",
+        "persist transaction ended",
+        "session closed",
+    ]
