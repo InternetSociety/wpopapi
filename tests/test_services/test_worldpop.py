@@ -114,6 +114,22 @@ async def test_pop_queries_with_local_raster(
 
     assert await service.get_pop("nzl", 7.5, 2.5) == 23
     assert await service.get_pop_radius("nzl", 7.5, 2.5, 2_000_000) == 5050
+    map_geojson = await service.get_map("nzl", 7.5, 2.5, 1)
+    assert map_geojson.model_dump(mode="json") == {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [
+                        [[2.0, 8.0], [3.0, 8.0], [3.0, 7.0], [2.0, 7.0], [2.0, 8.0]]
+                    ],
+                },
+                "properties": {"pop": 23.0},
+            }
+        ],
+    }
     with pytest.raises(
         CoordinatesOutsideCountryError,
         match=(
@@ -154,7 +170,49 @@ async def test_pop_queries_with_local_raster(
     ):
         await service.get_pop_shape("nzl", outside_geojson)
 
-    assert tile_requests == ["NZL", "NZL", "NZL", "NZL", "NZL", "NZL", "NZL"]
+    assert tile_requests == [
+        "NZL",
+        "NZL",
+        "NZL",
+        "NZL",
+        "NZL",
+        "NZL",
+        "NZL",
+        "NZL",
+    ]
+
+
+def test_map_returns_full_intersecting_cells_with_rounded_values(
+    tmp_path, suppress_rasterio_affine_warning
+):
+    raster_path = tmp_path / "NZL_pop.tif"
+    data = np.array([[1.234, 2.346], [3.454, 4.566]], dtype=np.float32)
+    with rasterio.open(
+        raster_path,
+        "w",
+        driver="GTiff",
+        height=2,
+        width=2,
+        count=1,
+        dtype=data.dtype,
+        crs="EPSG:4326",
+        transform=from_origin(0, 2, 1, 1),
+    ) as dst:
+        dst.write(data, 1)
+
+    result = worldpop._raster_cells_geojson(
+        str(raster_path), box(0.5, 0.5, 1.5, 1.5)
+    ).model_dump(mode="json")
+
+    assert [feature["properties"]["pop"] for feature in result["features"]] == [
+        1.23,
+        2.35,
+        3.45,
+        4.57,
+    ]
+    assert result["features"][0]["geometry"]["coordinates"] == [
+        [[0.0, 2.0], [1.0, 2.0], [1.0, 1.0], [0.0, 1.0], [0.0, 2.0]]
+    ]
 
 
 def test_population_sum_weights_partially_covered_cells(

@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -41,3 +42,23 @@ class TokenResponse(BaseModel):
 
 class PopulationResponse(BaseModel):
     pop: int
+
+
+class RasterValueProperties(BaseModel):
+    pop: float
+
+
+class GeoJSONPolygon(BaseModel):
+    type: Literal["Polygon"] = "Polygon"
+    coordinates: list[list[tuple[float, float]]]
+
+
+class RasterFeature(BaseModel):
+    type: Literal["Feature"] = "Feature"
+    geometry: GeoJSONPolygon
+    properties: RasterValueProperties
+
+
+class RasterFeatureCollection(BaseModel):
+    type: Literal["FeatureCollection"] = "FeatureCollection"
+    features: list[RasterFeature]

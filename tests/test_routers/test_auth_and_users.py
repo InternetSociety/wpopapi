@@ -12,6 +12,12 @@ from app.dependencies import get_password_reset_mailer, get_worldpop_service
 from app.main import app
 from app.models.models import User
 from app.repositories.users import UserRepository
+from app.schemas.schemas import (
+    GeoJSONPolygon,
+    RasterFeature,
+    RasterFeatureCollection,
+    RasterValueProperties,
+)
 from app.services.worldpop import CoordinatesOutsideCountryError
 
 
@@ -106,6 +112,55 @@ async def test_persistent_token_and_access_jwt_authenticate_api(
     )
     assert persistent.json() == {"pop": 42}
     assert jwt_access.json() == {"pop": 42}
+
+
+@pytest.mark.asyncio
+async def test_map_returns_geojson_for_an_authenticated_user(
+    client: AsyncClient, user_factory: UserFactory
+) -> None:
+    user = await user_factory("api@example.com", bearer_token="persistent-token")
+    calls = []
+    feature = RasterFeature(
+        geometry=GeoJSONPolygon(
+            coordinates=[
+                [
+                    (173.623, -41.262),
+                    (173.624, -41.262),
+                    (173.624, -41.263),
+                    (173.623, -41.263),
+                    (173.623, -41.262),
+                ]
+            ]
+        ),
+        properties=RasterValueProperties(pop=1.23),
+    )
+
+    class FakeWorldPopService:
+        async def get_map(
+            self, iso3: str, lat: float, lon: float, radius: float
+        ) -> RasterFeatureCollection:
+            calls.append((iso3, lat, lon, radius))
+            return RasterFeatureCollection(features=[feature] * 4_743)
+
+    app.dependency_overrides[get_worldpop_service] = lambda: FakeWorldPopService()
+    response = await client.get(
+        "/api/map",
+        params={
+            "iso3": "NZL",
+            "lat": -41.262491,
+            "lon": 173.623133,
+            "radius": 10_000,
+        },
+        headers={"Authorization": "Bearer persistent-token"},
+    )
+
+    assert response.status_code == 200
+    assert calls == [("NZL", -41.262491, 173.623133, 10_000.0)]
+    assert len(response.json()["features"]) == 4_743
+
+    await sign_in(client, user.email)
+    docs = await client.get("/docs")
+    assert '"syntaxHighlight": false' in docs.text
 
 
 @pytest.mark.asyncio

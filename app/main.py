@@ -37,7 +37,10 @@ def create_app() -> FastAPI:
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
-        swagger_ui_parameters={"persistAuthorization": True},
+        swagger_ui_parameters={
+            "persistAuthorization": True,
+            "syntaxHighlight": False,
+        },
     )
     application.include_router(auth.router)
     application.include_router(api.router)

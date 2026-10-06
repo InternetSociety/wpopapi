@@ -13,6 +13,12 @@ from rasterio.errors import WindowError
 from app.config import dataset, release, settings, version, year
 from app.models.models import CachedTile
 from app.repositories.tiles import TileRepository
+from app.schemas.schemas import (
+    GeoJSONPolygon,
+    RasterFeature,
+    RasterFeatureCollection,
+    RasterValueProperties,
+)
 from app.services.exceptions import InvalidPopulationInputError
 from rasterio.features import geometry_mask
 from rasterio.windows import from_bounds
@@ -124,6 +130,17 @@ def _extract_geometries(geojson: dict) -> list[Any]:
 def _point_within_bounds(bounds: Any, lon: float, lat: float) -> bool:
     minx, miny, maxx, maxy = bounds
     return minx <= lon <= maxx and miny <= lat <= maxy
+
+
+def _radius_buffer_wgs84(lat: float, lon: float, radius_meters: float) -> Any:
+    aeqd_proj = pyproj.Proj(
+        proj="aeqd", ellps="WGS84", datum="WGS84", lat_0=lat, lon_0=lon
+    )
+    wgs84_proj = pyproj.Proj(proj="latlong", datum="WGS84")
+    project_to_wgs84 = pyproj.Transformer.from_proj(
+        aeqd_proj, wgs84_proj, always_xy=True
+    ).transform
+    return transform(project_to_wgs84, Point(0, 0).buffer(radius_meters))
 
 
 class WorldPopService:
@@ -238,17 +255,32 @@ class WorldPopService:
         if not within_bounds:
             raise CoordinatesOutsideCountryError(iso3)
 
-        aeqd_proj = pyproj.Proj(
-            proj="aeqd", ellps="WGS84", datum="WGS84", lat_0=lat, lon_0=lon
-        )
-        wgs84_proj = pyproj.Proj(proj="latlong", datum="WGS84")
-        project_to_wgs84 = pyproj.Transformer.from_proj(
-            aeqd_proj, wgs84_proj, always_xy=True
-        ).transform
-        buffer_wgs84 = transform(project_to_wgs84, Point(0, 0).buffer(radius_meters))
+        buffer_wgs84 = _radius_buffer_wgs84(lat, lon, radius_meters)
         return await asyncio.to_thread(
             _sum_raster_population_with_cell_coverage, file_path, [buffer_wgs84]
         )
+
+    async def get_map(
+        self, iso3: str, lat: float, lon: float, radius_meters: float
+    ) -> RasterFeatureCollection:
+        iso3 = self._normalize_iso3(iso3)
+        self.validate_radius(radius_meters)
+        logging.info(
+            "get_map: iso3=%s lat=%s lon=%s radius=%s",
+            iso3,
+            lat,
+            lon,
+            radius_meters,
+        )
+        file_path = await self.get_tile_path(iso3)
+        within_bounds = await asyncio.to_thread(
+            _coordinates_within_raster, file_path, lat, lon
+        )
+        if not within_bounds:
+            raise CoordinatesOutsideCountryError(iso3)
+
+        buffer_wgs84 = _radius_buffer_wgs84(lat, lon, radius_meters)
+        return await asyncio.to_thread(_raster_cells_geojson, file_path, buffer_wgs84)
 
     async def get_pop_shape(self, iso3: str, geojson: dict) -> int:
         iso3 = self._normalize_iso3(iso3)
@@ -396,3 +428,51 @@ def _sum_raster_population_with_cell_coverage(
             total += float(window_data.data[row, column]) * covered_fraction
 
         return int(round(total))
+
+
+def _raster_cells_geojson(file_path: str, geometry: Any) -> RasterFeatureCollection:
+    features: list[RasterFeature] = []
+    with rasterio.open(file_path) as src:
+        bounds_window = from_bounds(*geometry.bounds, src.transform)
+        column_start = math.floor(bounds_window.col_off)
+        row_start = math.floor(bounds_window.row_off)
+        column_stop = math.ceil(bounds_window.col_off + bounds_window.width)
+        row_stop = math.ceil(bounds_window.row_off + bounds_window.height)
+        window = rasterio.windows.Window(
+            column_start,
+            row_start,
+            column_stop - column_start,
+            row_stop - row_start,
+        )
+        try:
+            window = window.intersection(
+                rasterio.windows.Window(0, 0, src.width, src.height)
+            )
+        except WindowError:
+            return RasterFeatureCollection(features=[])
+        if window.width <= 0 or window.height <= 0:
+            return RasterFeatureCollection(features=[])
+
+        window_data = src.read(1, window=window, masked=True)
+        window_transform = src.window_transform(window)
+        for row, column in zip(*np.nonzero(~np.ma.getmaskarray(window_data))):
+            corners = [
+                window_transform * (column, row),
+                window_transform * (column + 1, row),
+                window_transform * (column + 1, row + 1),
+                window_transform * (column, row + 1),
+            ]
+            cell = Polygon(corners)
+            if geometry.intersection(cell).area <= 0:
+                continue
+            ring = [*corners, corners[0]]
+            features.append(
+                RasterFeature(
+                    geometry=GeoJSONPolygon(coordinates=[ring]),
+                    properties=RasterValueProperties(
+                        pop=round(float(window_data.data[row, column]), 2)
+                    ),
+                )
+            )
+
+    return RasterFeatureCollection(features=features)

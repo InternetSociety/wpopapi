@@ -14,6 +14,8 @@ All geographic input uses longitude and latitude in WGS 84 coordinates. Each rou
 
 `GET /api/pop-radius` first checks that the center point is inside the raster bounds. It also checks the configured radius range. PyProj makes an azimuthal-equidistant projection centered on the point. Shapely makes a meter-based circular buffer in that projection, then converts it to WGS 84.
 
+`GET /api/map` accepts the same parameters as `/api/pop-radius`. It returns a GeoJSON `FeatureCollection` containing every unmasked raster cell that intersects the radius. Each polygon is the full raster-cell footprint, including cells only partly inside the radius, and its `pop` property contains the cell value rounded to two decimal places.
+
 `POST /api/pop-shape` accepts a multipart `geojson_file` and `iso3`. FastAPI limits the uploaded file size before it parses the JSON. Shapely converts GeoJSON geometries, Features, and FeatureCollections to geometries. The route checks the configured vertex limit and requires at least one geometry to intersect the raster bounds.
 
 For radius and shape queries, Rasterio reads only the raster window that overlaps the geometry bounds. Shapely finds the area where each query geometry overlaps an unmasked cell. The service treats each cell population as evenly distributed. It multiplies the cell value by its covered fraction before it calculates the sum.

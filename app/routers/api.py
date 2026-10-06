@@ -7,7 +7,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from app.config import settings
 from app.dependencies import get_current_active_user, get_worldpop_service
 from app.models.models import User
-from app.schemas.schemas import PopulationResponse
+from app.schemas.schemas import PopulationResponse, RasterFeatureCollection
 from app.services.worldpop import WorldPopService
 
 
@@ -53,6 +53,21 @@ async def get_pop_radius(
 ) -> PopulationResponse:
     pop = await service.get_pop_radius(iso3, lat, lon, radius)
     return PopulationResponse(pop=pop)
+
+
+@router.get("/map", response_model=RasterFeatureCollection)
+async def get_map(
+    iso3: str,
+    lat: float,
+    lon: float,
+    radius: float,
+    service: Annotated[WorldPopService, Depends(get_worldpop_service)],
+    _current_user: Annotated[User, Depends(get_current_active_user)],
+    _credentials: Annotated[
+        HTTPAuthorizationCredentials | None, Security(bearer_scheme)
+    ],
+) -> RasterFeatureCollection:
+    return await service.get_map(iso3, lat, lon, radius)
 
 
 @router.post("/pop-shape", response_model=PopulationResponse)
